@@ -57,7 +57,9 @@ its speakers. For a project that exceeds practical direct inspection, has many
 voices, or receives continuing updates:
 
 1. Run `scripts/index_rpy_project.py scan` to build a local read-only index.
-2. Run `summary` to inspect compact counts without emitting dialogue text.
+2. Run `summary` to inspect compact source/target counts, pairing coverage,
+   structural-difference counts, and bounded file/line locations without
+   emitting dialogue text.
 3. Run `samples` with explicit limits to retrieve representative evidence for
    one speaker or voice channel at a time.
 4. Cap the first profiling pass before requesting more evidence. Prefer major,
@@ -89,8 +91,8 @@ Report when deeper sampling would cross the agreed budget.
 
 When no approved project profile exists:
 
-1. Inventory speaker identifiers, narrators, fonts, colors, styles, and unusual
-   text channels.
+1. Inventory speaker identifiers, dialogue attributes such as pose or delivery
+   markers, narrators, fonts, colors, styles, and unusual text channels.
 2. Sample each important voice across chapters, interlocutors, emotions, and
    style variants rather than taking only its first lines.
 3. Infer observable register features. Do not map class, species, or typography
@@ -119,7 +121,8 @@ For each batch:
 4. Record protected tokens before changing natural-language text.
 5. Translate the speech act, facts, emotional force, ambiguity, and character
    relationship rather than following English word order.
-6. Restore each protected token with exact spelling, count, and parameters.
+6. Restore each protected token with exact spelling, count, parameters, and
+   the source's explicit or implicit closing behavior.
    Reposition inline interpolation or emphasis only when Chinese syntax or
    semantic attachment requires it. Preserve control-tag order and timing.
 7. Keep menu choices concise while preserving player intent and likely

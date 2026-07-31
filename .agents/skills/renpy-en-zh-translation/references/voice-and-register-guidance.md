@@ -37,7 +37,9 @@ per speaker.
 ## Interpret typography cautiously
 
 Fonts, colors, and styles can mark a speaker, narrator, thought, deity, AI,
-ghost, broadcast, letter, dream, timeline, emotion, or mere decoration.
+ghost, broadcast, letter, dream, timeline, or emotion. They can also be purely
+technical or presentational: UI headings, glyph fallback, redaction blocks,
+supporter names, icons, and decoration do not define a speaking voice.
 
 Before assigning a translation register:
 
@@ -45,7 +47,9 @@ Before assigning a translation register:
 2. Check Character definitions, text tags, styles, and surrounding scenes.
 3. Determine whether one marker maps to several voices or one voice uses
    several markers.
-4. Record the mapping as evidence with confidence, not as a fact inferred from
+4. Classify it as voice-bearing, layout/UI, glyph fallback, redaction,
+   decorative, mixed, or unknown.
+5. Record the mapping as evidence with confidence, not as a fact inferred from
    appearance alone.
 
 ## Profile with bounded samples

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 STRING = r'(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)(?P=quote)'
 TRANSLATE_RE = re.compile(
     r"^(?P<indent>\s*)translate\s+\w+\s+(?P<block>[A-Za-z0-9_]+)\s*:"
@@ -115,12 +115,14 @@ def make_text_record(
     indent: str,
     block: str | None,
     source_comment: bool,
+    attributes: str | None = None,
 ) -> dict[str, Any]:
     tags = TAG_RE.findall(text)
     return {
         "line": line_number,
         "kind": kind,
         "speaker": speaker,
+        "attributes": attributes,
         "text": text,
         "indent": indent,
         "block": block,
@@ -205,6 +207,7 @@ def parse_statement(
         indent=match.group("indent"),
         block=block,
         source_comment=source_comment,
+        attributes=attributes.strip(),
     )
 
 
@@ -401,6 +404,145 @@ def iter_records(data: dict[str, Any]) -> Iterable[dict[str, Any]]:
             yield {"file": relative, **record}
 
 
+def count_speakers(records: Iterable[dict[str, Any]]) -> Counter[str]:
+    return Counter(
+        record["speaker"]
+        for record in records
+        if record.get("speaker") is not None
+    )
+
+
+def count_markers(
+    records: Iterable[dict[str, Any]], field: str
+) -> Counter[str]:
+    return Counter(
+        marker
+        for record in records
+        for marker in dict.fromkeys(record.get(field, []))
+    )
+
+
+def compare_record_pair(
+    source: dict[str, Any], target: dict[str, Any]
+) -> dict[str, int]:
+    differences = Counter()
+    source_kind = "string" if source["kind"] == "old" else source["kind"]
+    target_kind = "string" if target["kind"] == "new" else target["kind"]
+    if source_kind != target_kind:
+        differences["statement_role"] += 1
+    if source.get("speaker") != target.get("speaker"):
+        differences["speaker"] += 1
+    if source.get("attributes") != target.get("attributes"):
+        differences["attributes"] += 1
+    source_tags = source.get("tags", [])
+    target_tags = target.get("tags", [])
+    if Counter(source_tags) != Counter(target_tags):
+        differences["tag_tokens"] += 1
+    elif source_tags != target_tags:
+        differences["tag_order"] += 1
+    source_interpolations = source.get("interpolations", [])
+    target_interpolations = target.get("interpolations", [])
+    if Counter(source_interpolations) != Counter(target_interpolations):
+        differences["interpolation_tokens"] += 1
+    elif source_interpolations != target_interpolations:
+        differences["interpolation_order"] += 1
+    return {
+        name: differences[name]
+        for name in (
+            "statement_role",
+            "speaker",
+            "attributes",
+            "tag_tokens",
+            "tag_order",
+            "interpolation_tokens",
+            "interpolation_order",
+        )
+    }
+
+
+def summarize_pairs(
+    records: list[dict[str, Any]],
+    *,
+    source_kind: str,
+    top: int,
+) -> dict[str, Any]:
+    groups: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+    for record in records:
+        block = record.get("block")
+        if block is None:
+            continue
+        if source_kind == "comments":
+            if record["kind"] in {"old", "new"}:
+                continue
+            side = "source" if record["source_comment"] else "target"
+        else:
+            if record["kind"] not in {"old", "new"}:
+                continue
+            side = "source" if record["kind"] == "old" else "target"
+        group = groups.setdefault(
+            (record["file"], block), {"source": [], "target": []}
+        )
+        group[side].append(record)
+
+    counts = Counter()
+    differences = Counter()
+    examples = []
+    for group in groups.values():
+        sources = group["source"]
+        targets = group["target"]
+        if sources and targets and len(sources) == len(targets):
+            counts["balanced_blocks"] += 1
+        elif sources and targets:
+            counts["count_mismatch_blocks"] += 1
+        elif sources:
+            counts["source_only_blocks"] += 1
+        else:
+            counts["target_only_blocks"] += 1
+        counts["source_statements"] += len(sources)
+        counts["target_statements"] += len(targets)
+        counts["statement_pairs_compared"] += min(len(sources), len(targets))
+        for source, target in zip(sources, targets):
+            pair_differences = compare_record_pair(source, target)
+            differences.update(pair_differences)
+            fields = [
+                name for name, count in pair_differences.items() if count
+            ]
+            if fields and len(examples) < top:
+                examples.append(
+                    {
+                        "file": source["file"],
+                        "block": source["block"],
+                        "source_line": source["line"],
+                        "target_line": target["line"],
+                        "fields": fields,
+                    }
+                )
+
+    return {
+        "blocks": len(groups),
+        "balanced_blocks": counts["balanced_blocks"],
+        "count_mismatch_blocks": counts["count_mismatch_blocks"],
+        "source_only_blocks": counts["source_only_blocks"],
+        "target_only_blocks": counts["target_only_blocks"],
+        "source_statements": counts["source_statements"],
+        "target_statements": counts["target_statements"],
+        "statement_pairs_compared": counts["statement_pairs_compared"],
+        "structural_differences": {
+            name: differences[name]
+            for name in (
+                "statement_role",
+                "speaker",
+                "attributes",
+                "tag_tokens",
+                "tag_order",
+                "interpolation_tokens",
+                "interpolation_order",
+            )
+        },
+        "difference_locations": examples,
+    }
+
+
 def compact_summary(data: dict[str, Any], top: int = 20) -> dict[str, Any]:
     records = list(iter_records(data))
     character_records = [
@@ -415,27 +557,49 @@ def compact_summary(data: dict[str, Any], top: int = 20) -> dict[str, Any]:
     source_records = [
         record for record in text_records if record["source_comment"]
     ]
-    speakers = Counter(
-        record["speaker"]
-        for record in text_records
-        if record.get("speaker") is not None
-    )
+    old_records = [
+        record for record in active_records if record["kind"] == "old"
+    ]
+    new_records = [
+        record for record in active_records if record["kind"] == "new"
+    ]
+    if source_records:
+        source_evidence = source_records + old_records
+        target_records = [
+            record for record in active_records if record["kind"] != "old"
+        ]
+        profile_source = (
+            "source_comments_and_old"
+            if old_records
+            else "source_comments"
+        )
+    elif old_records:
+        source_evidence = [
+            record for record in active_records if record["kind"] != "new"
+        ]
+        target_records = new_records
+        profile_source = "active_statements_and_old"
+    else:
+        source_evidence = active_records
+        target_records = []
+        profile_source = "active_statements"
+    profile_records = source_evidence
+    speakers = count_speakers(profile_records)
+    source_speakers = count_speakers(source_evidence)
+    target_speakers = count_speakers(target_records)
     kinds = Counter(record["kind"] for record in text_records)
-    fonts = Counter(
-        font
-        for record in records
-        for font in record.get("fonts", [])
-    )
-    colors = Counter(
-        color
-        for record in records
-        for color in record.get("colors", [])
-    )
+    source_fonts = count_markers(source_evidence, "fonts")
+    target_fonts = count_markers(target_records, "fonts")
+    source_colors = count_markers(source_evidence, "colors")
+    target_colors = count_markers(target_records, "colors")
+    fonts = count_markers(profile_records + character_records, "fonts")
+    colors = count_markers(profile_records + character_records, "colors")
     return {
         "files": len(data["files"]),
         "text_statements": len(text_records),
         "active_statements": len(active_records),
         "source_comment_statements": len(source_records),
+        "profile_evidence_source": profile_source,
         "character_definitions": len(character_records),
         "character_markers": [
             {
@@ -450,8 +614,22 @@ def compact_summary(data: dict[str, Any], top: int = 20) -> dict[str, Any]:
         ],
         "kinds": dict(kinds.most_common()),
         "top_speakers": dict(speakers.most_common(top)),
+        "top_speakers_source": dict(source_speakers.most_common(top)),
+        "top_speakers_target": dict(target_speakers.most_common(top)),
         "fonts": dict(fonts.most_common(top)),
+        "fonts_source": dict(source_fonts.most_common(top)),
+        "fonts_target": dict(target_fonts.most_common(top)),
         "colors": dict(colors.most_common(top)),
+        "colors_source": dict(source_colors.most_common(top)),
+        "colors_target": dict(target_colors.most_common(top)),
+        "pairing": {
+            "commented_source_targets": summarize_pairs(
+                text_records, source_kind="comments", top=top
+            ),
+            "old_new": summarize_pairs(
+                text_records, source_kind="old", top=top
+            ),
+        },
     }
 
 
@@ -597,7 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--top",
         type=int,
         default=20,
-        help="Maximum speakers/fonts/colors to return.",
+        help="Maximum speakers, markers, and difference locations to return.",
     )
     summary.set_defaults(func=summarize_index)
 
@@ -651,7 +829,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise IndexErrorMessage("--max-chars must be between 40 and 2000")
 
 
+def configure_utf8_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    configure_utf8_output()
     parser = build_parser()
     args = parser.parse_args()
     try:

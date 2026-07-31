@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,14 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(result["character_definitions"], 3)
         self.assertEqual(result["kinds"]["ui"], 2)
         self.assertNotIn("extend", result["top_speakers"])
+        self.assertEqual(
+            result["profile_evidence_source"], "source_comments_and_old"
+        )
+        self.assertEqual(result["top_speakers"]["duke"], 2)
+        self.assertGreater(result["top_speakers_target"]["duke"], 2)
+        pairing = result["pairing"]["commented_source_targets"]
+        self.assertEqual(pairing["balanced_blocks"], 1)
+        self.assertEqual(pairing["structural_differences"]["tag_tokens"], 0)
         duke_marker = next(
             marker
             for marker in result["character_markers"]
@@ -101,6 +110,93 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertTrue(samples["samples"][0]["source_comment"])
         self.assertLessEqual(len(samples["samples"][0]["context"]), 3)
 
+    def test_records_dialogue_attributes_and_source_relative_tags(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        data = json.loads(self.index.read_text(encoding="utf-8"))
+        records = [
+            record
+            for entry in data["files"].values()
+            for record in entry["records"]
+            if record.get("speaker") == "duke"
+            and record.get("attributes") == "2 stern"
+        ]
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["tags"], ["{font=fonts/mask.ttf}"])
+        self.assertEqual(records[1]["tags"], ["{font=fonts/mask.ttf}"])
+
+    def test_reports_structural_differences_without_printing_text(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                '\ntranslate schinese mismatch_deadbeef:\n\n'
+                '    # duke 1 stern "{i}Stop, [player_name].{/i}"\n'
+                '    duke 2 smile "停下，[player_name]。"\n'
+                '\ntranslate schinese reorder_cafefeed:\n\n'
+                '    # duke "First [alpha], then [beta]."\n'
+                '    duke "先[beta]，再[alpha]。"\n'
+            )
+
+        result, raw = self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        differences = result["pairing"]["commented_source_targets"][
+            "structural_differences"
+        ]
+
+        self.assertEqual(differences["attributes"], 1)
+        self.assertEqual(differences["tag_tokens"], 1)
+        self.assertEqual(differences["interpolation_tokens"], 0)
+        self.assertEqual(differences["interpolation_order"], 1)
+        locations = result["pairing"]["commented_source_targets"][
+            "difference_locations"
+        ]
+        self.assertEqual(locations[0]["file"], "game/tl/schinese/story.rpy")
+        self.assertNotIn("text", locations[0])
+        self.assertNotIn("Stop", raw)
+        self.assertNotIn("停下", raw)
+
+    def test_cli_forces_utf8_output_on_legacy_windows_encoding(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "cp1252"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "samples",
+                "--index",
+                str(self.index),
+                "--speaker",
+                "duke",
+                "--source",
+                "active",
+                "--limit",
+                "100",
+                "--context",
+                "0",
+            ],
+            check=True,
+            capture_output=True,
+            env=environment,
+        )
+        output = completed.stdout.decode("utf-8")
+
+        self.assertIn("你迟到了", output)
+
     def test_reuses_unchanged_files_and_refreshes_changed_file(self) -> None:
         self.run_cli(
             "scan",
@@ -137,6 +233,8 @@ class IndexRpyProjectTests(unittest.TestCase):
 
         self.assertEqual(result["files"], 1)
         self.assertEqual(result["source_comment_statements"], 0)
+        self.assertIn("duke", result["top_speakers"])
+        self.assertEqual(result["top_speakers_target"], {})
 
     def test_python_assignment_is_not_indexed(self) -> None:
         self.run_cli(
