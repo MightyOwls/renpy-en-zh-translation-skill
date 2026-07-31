@@ -1,0 +1,22 @@
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Ren'Py translation indexes may contain full game text
+.renpy-translation/
+*.renpy-index.json
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

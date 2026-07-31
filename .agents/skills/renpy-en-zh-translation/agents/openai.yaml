@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ren'Py English-to-Chinese Translation"
+  short_description: "Translate Ren'Py scripts into natural Simplified Chinese"
+  default_prompt: "Use $renpy-en-zh-translation to translate Ren'Py localization files into Simplified Chinese while preserving syntax and character voice."
