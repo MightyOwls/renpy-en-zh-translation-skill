@@ -1,0 +1,119 @@
+# Ren'Py English-to-Chinese Translation Skill
+
+A repository-scoped Codex Skill for translating and reviewing English Ren'Py
+localization files as natural Simplified Chinese while preserving executable
+structure.
+
+这是一个面向 Codex 的仓库级 Skill，用于翻译或审校英文 Ren'Py 本地化
+文件。它把语法保护视为硬性条件，并在此基础上处理人物声线、叙事语域、
+称谓、菜单意图和中文表达。
+
+> Status: early development. Use version control, inspect the final diff, and
+> run available Ren'Py checks before distributing a translated game.
+
+## 功能
+
+- 翻译或修订角色对话、旁白、内心独白、菜单、UI 和 `old`/`new` 字符串。
+- 保留 speaker、translation block、插值、文本标签、转义、缩进和代码结构。
+- 在批量翻译前建立术语、人物声线、叙事语域和特殊文字通道档案。
+- 使用本地索引扫描大型项目，只向模型提供汇总数据和有限样本。
+- 对比注释原文与活动译文，报告配对覆盖和结构差异的位置。
+- 区分受保护标记的增删与仅因中文语序产生的换序。
+
+核心入口见
+[SKILL.md](.agents/skills/renpy-en-zh-translation/SKILL.md)。详细规则位于
+[references/](.agents/skills/renpy-en-zh-translation/references/)。
+
+## 不在范围内
+
+本 Skill 不负责：
+
+- `.rpa` 解包或 `.rpyc` 反编译；
+- 字体安装、游戏引擎调试或代码修复；
+- Ren'Py 构建、安卓移植和发布；
+- 无人工复核的整部游戏一键翻译。
+
+索引脚本是轻量发现与抽样工具，不是完整的 Ren'Py AST 或语法验证器。
+复杂的多行定义、自定义 statement 和项目特有语法仍需人工检查。
+
+## 安装
+
+将以下目录复制到目标仓库的相同位置：
+
+```text
+.agents/skills/renpy-en-zh-translation/
+```
+
+然后在 Codex 中打开目标仓库，并提出类似请求：
+
+```text
+Use $renpy-en-zh-translation to translate game/tl/schinese/chapter1.rpy.
+```
+
+或者：
+
+```text
+使用 renpy-en-zh-translation，先分析这些角色的说话方式并提出声线方案，
+不要修改文件，等我确认后再开始翻译。
+```
+
+## 大型项目的低-token工作流
+
+索引在本地读取 `.rpy` 文件。`scan` 和 `summary` 只输出统计与有限的差异
+位置，不输出完整台词；只有 `samples` 会按明确上限返回原文证据。
+
+```text
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py scan "PATH_TO_PROJECT" --index .renpy-translation/project-index.json
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py summary --index .renpy-translation/project-index.json
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source comments --limit 12 --context 2
+```
+
+如果扫描原始脚本，应排除生成的本地化树，避免重复统计：
+
+```text
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py scan "PATH_TO_PROJECT" --index .renpy-translation/project-index.json --exclude "**/tl/**"
+```
+
+`.renpy-translation/` 已被本仓库的 `.gitignore` 排除，因为索引可能包含
+完整游戏文本。不要把索引、商业游戏文本或未经授权的翻译语料提交到公开
+仓库。
+
+## 开发与验证
+
+运行回归测试：
+
+```text
+python -m unittest discover -s tests -v
+```
+
+验证 Skill 结构：
+
+```text
+python <path-to-skill-creator>/scripts/quick_validate.py .agents/skills/renpy-en-zh-translation
+```
+
+测试夹具均为匿名合成内容。仓库不包含用于校准的商业游戏文件或真实台词。
+
+## 项目结构
+
+```text
+.agents/skills/renpy-en-zh-translation/
+├── SKILL.md
+├── agents/openai.yaml
+├── references/
+└── scripts/index_rpy_project.py
+
+tests/
+└── skill_fixtures/
+```
+
+## 参与贡献
+
+欢迎提交针对真实失败模式的最小匿名夹具和回归测试。请勿提交游戏本体、
+未经授权的脚本、完整翻译语料、凭据或本地索引。
+
+## License
+
+[MIT](LICENSE)
