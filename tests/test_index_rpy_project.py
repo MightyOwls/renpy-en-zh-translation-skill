@@ -110,6 +110,115 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertTrue(samples["samples"][0]["source_comment"])
         self.assertLessEqual(len(samples["samples"][0]["context"]), 3)
 
+    def test_samples_filter_by_project_relative_file_glob(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        samples, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--speaker",
+            "duke",
+            "--file",
+            "game/tl/**",
+            "--source",
+            "comments",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
+        union_samples, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--speaker",
+            "duke",
+            "--file",
+            "game/story.rpy",
+            "--file",
+            "game/tl/**",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
+
+        self.assertEqual(samples["matched"], 2)
+        self.assertTrue(
+            all(
+                sample["file"] == "game/tl/schinese/story.rpy"
+                for sample in samples["samples"]
+            )
+        )
+        self.assertEqual(union_samples["matched"], union_samples["returned"])
+        self.assertEqual(
+            {sample["file"] for sample in union_samples["samples"]},
+            {"game/story.rpy", "game/tl/schinese/story.rpy"},
+        )
+
+    def test_samples_filter_by_escaped_outer_quotes(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "\ntranslate schinese voice_modes_deadbeef:\n\n"
+                '    # duke "\\\"Spoken aloud.\\\""\n'
+                '    duke "\\\"Target spoken.\\\""\n'
+                '    # duke "An internal observation."\n'
+                '    duke "Target thought."\n'
+            )
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        present, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--speaker",
+            "duke",
+            "--source",
+            "comments",
+            "--outer-quotes",
+            "present",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
+        absent, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--speaker",
+            "duke",
+            "--source",
+            "comments",
+            "--outer-quotes",
+            "absent",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
+
+        self.assertEqual(present["matched"], 1)
+        self.assertEqual(absent["matched"], 3)
+        self.assertEqual(present["samples"][0]["text"], '\\"Spoken aloud.\\"')
+        self.assertTrue(
+            all(
+                sample["text"] != '\\"Spoken aloud.\\"'
+                for sample in absent["samples"]
+            )
+        )
+
     def test_records_dialogue_attributes_and_source_relative_tags(self) -> None:
         self.run_cli(
             "scan",

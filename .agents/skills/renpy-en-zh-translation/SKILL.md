@@ -71,13 +71,25 @@ voices, or receives continuing updates:
 python scripts/index_rpy_project.py scan <project> --index <index.json>
 python scripts/index_rpy_project.py scan <project> --index <index.json> --exclude "**/tl/**"
 python scripts/index_rpy_project.py summary --index <index.json>
-python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 2
+python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 0
+python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
 ```
 
 Prefer one source-evidence corpus. Scan original scripts while excluding
 generated `tl/` trees, or scan only the localization tree and sample its source
 comments. Do not count original, comment, and active target copies as three
 independent voice samples.
+
+When an existing target translation is not approved style evidence, begin with
+`--context 0`. Context lines are raw neighboring file lines and can include
+active targets or code even when the center sample uses `--source comments`.
+Increase context only when those neighboring lines are acceptable evidence.
+
+Use `--outer-quotes present` and `--outer-quotes absent` when a project uses
+escaped visible quotation marks to distinguish text channels. Treat this only
+as a syntactic split until surrounding scenes confirm what each form means.
+Likewise, `kind=narration` means only that the scanner found no speaker token;
+it may include narration, internal thought, anonymous speech, or custom modes.
 
 Treat this lightweight index as a discovery and sampling aid, not as a Ren'Py
 AST or syntax validator. Inspect multiline definitions, custom statements, and

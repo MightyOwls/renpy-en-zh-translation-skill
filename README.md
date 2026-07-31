@@ -67,8 +67,22 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py scan 
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py summary --index .renpy-translation/project-index.json
 
-python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source comments --limit 12 --context 2
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source comments --limit 12 --context 0
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --file "routes/ROUTE_NAME*.rpy" --source comments --limit 12 --context 0
 ```
+
+`--file` 接受项目相对的 POSIX 风格 glob，可重复指定；它适合把同一 speaker
+在不同路线中的样本分开，避免其他场景稀释人物声线证据。
+如果项目用包住整段文本的可见引号区分发言与其他频道，可再使用
+`--outer-quotes present` 或 `--outer-quotes absent` 分组。该选项只识别句法形式，
+仍须结合场景确认它表示对白、心理活动还是其他功能。
+同理，`kind=narration` 只表示扫描器未发现 speaker 标识，其中仍可能混有旁白、
+内心活动、匿名发言或项目自定义频道。
+
+若现有译文未获准作为风格证据，应从 `--context 0` 开始。上下文是原文件中的
+原始邻行，即使中心样本使用 `--source comments`，邻行仍可能包含活动译文或代码；
+只有在这些内容可被纳入证据时才提高上下文行数。
 
 如果扫描原始脚本，应排除生成的本地化树，避免重复统计：
 

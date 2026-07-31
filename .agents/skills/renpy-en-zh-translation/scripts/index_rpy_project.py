@@ -689,6 +689,10 @@ def context_for_record(
     ]
 
 
+def has_escaped_outer_quotes(text: str) -> bool:
+    return len(text) >= 4 and text.startswith('\\"') and text.endswith('\\"')
+
+
 def sample_index(args: argparse.Namespace) -> int:
     data = load_index(Path(args.index).resolve())
     candidates = [
@@ -708,6 +712,22 @@ def sample_index(args: argparse.Namespace) -> int:
     if args.kind is not None:
         candidates = [
             record for record in candidates if record["kind"] == args.kind
+        ]
+    if args.file:
+        candidates = [
+            record
+            for record in candidates
+            if any(
+                fnmatch.fnmatchcase(record["file"], pattern)
+                for pattern in args.file
+            )
+        ]
+    if args.outer_quotes is not None:
+        expected = args.outer_quotes == "present"
+        candidates = [
+            record
+            for record in candidates
+            if has_escaped_outer_quotes(record["text"]) == expected
         ]
     if args.source == "comments":
         candidates = [
@@ -787,8 +807,26 @@ def build_parser() -> argparse.ArgumentParser:
     samples.add_argument("--speaker", help="Exact speaker identifier.")
     samples.add_argument("--font", help="Exact font tag value.")
     samples.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help=(
+            "Include a project-relative POSIX-style file glob; repeat to "
+            "match multiple groups (example: routes/anders*.rpy)."
+        ),
+    )
+    samples.add_argument(
         "--kind",
         choices=("dialogue", "narration", "extend", "menu", "ui", "old", "new"),
+    )
+    samples.add_argument(
+        "--outer-quotes",
+        choices=("present", "absent"),
+        help=(
+            "Filter text by escaped visible quotes wrapping the whole value; "
+            "this is a syntactic signal, not an automatic voice label."
+        ),
     )
     samples.add_argument(
         "--source",
