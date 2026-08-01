@@ -58,8 +58,8 @@ voices, or receives continuing updates:
 
 1. Run `scripts/index_rpy_project.py scan` to build a local read-only index.
 2. Run `summary` to inspect compact source/target counts, pairing coverage,
-   structural-difference counts, and bounded file/line locations without
-   emitting dialogue text.
+   structural-difference counts, file-format conventions, and bounded
+   file/line locations without emitting dialogue text.
 3. Run `samples` with explicit limits to retrieve representative evidence for
    one speaker or voice channel at a time.
 4. Cap the first profiling pass before requesting more evidence. Prefer major,

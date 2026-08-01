@@ -88,12 +88,47 @@ class IndexErrorMessage(RuntimeError):
     """A user-facing index error."""
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def inspect_file(path: Path, encoding: str) -> tuple[dict[str, Any], str]:
+    raw = path.read_bytes()
+    try:
+        text = raw.decode(encoding)
+    except UnicodeError as exc:
+        raise IndexErrorMessage(
+            f"Cannot decode {path} with encoding {encoding}: {exc}"
+        ) from exc
+
+    without_crlf = text.replace("\r\n", "")
+    newline_kinds = []
+    if "\r\n" in text:
+        newline_kinds.append("crlf")
+    if "\n" in without_crlf:
+        newline_kinds.append("lf")
+    if "\r" in without_crlf:
+        newline_kinds.append("cr")
+    if not newline_kinds:
+        newline = "none"
+    elif len(newline_kinds) == 1:
+        newline = newline_kinds[0]
+    else:
+        newline = "mixed"
+
+    bom = "none"
+    for name, marker in (
+        ("utf-32-le", b"\xff\xfe\x00\x00"),
+        ("utf-32-be", b"\x00\x00\xfe\xff"),
+        ("utf-8", b"\xef\xbb\xbf"),
+        ("utf-16-le", b"\xff\xfe"),
+        ("utf-16-be", b"\xfe\xff"),
+    ):
+        if raw.startswith(marker):
+            bom = name
+            break
+
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "newline": newline,
+        "bom": bom,
+    }, text
 
 
 def extract_named_argument(args: str, names: Iterable[str]) -> list[str]:
@@ -211,14 +246,8 @@ def parse_statement(
     )
 
 
-def parse_file(path: Path, encoding: str) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding=encoding).splitlines()
-    except UnicodeError as exc:
-        raise IndexErrorMessage(
-            f"Cannot decode {path} with encoding {encoding}: {exc}"
-        ) from exc
-
+def parse_text(text: str) -> list[dict[str, Any]]:
+    lines = text.splitlines()
     records: list[dict[str, Any]] = []
     current_block: str | None = None
     block_indent = -1
@@ -360,21 +389,22 @@ def scan_project(args: argparse.Namespace) -> int:
 
     for path in files:
         relative = path.relative_to(root_for_paths).as_posix()
-        digest = file_sha256(path)
+        file_metadata, text = inspect_file(path, args.encoding)
+        digest = file_metadata["sha256"]
         old_entry = old_files.get(relative)
         if (
             old_entry
             and old_entry.get("sha256") == digest
             and old_entry.get("encoding") == args.encoding
         ):
-            indexed_files[relative] = old_entry
+            indexed_files[relative] = {**old_entry, **file_metadata}
             reused_files += 1
             continue
 
         indexed_files[relative] = {
-            "sha256": digest,
+            **file_metadata,
             "encoding": args.encoding,
-            "records": parse_file(path, args.encoding),
+            "records": parse_text(text),
         }
         changed_files += 1
 
@@ -594,8 +624,34 @@ def compact_summary(data: dict[str, Any], top: int = 20) -> dict[str, Any]:
     target_colors = count_markers(target_records, "colors")
     fonts = count_markers(profile_records + character_records, "fonts")
     colors = count_markers(profile_records + character_records, "colors")
+    encodings = Counter(
+        entry.get("encoding", "unknown") for entry in data["files"].values()
+    )
+    newlines = Counter(
+        entry.get("newline", "unknown") for entry in data["files"].values()
+    )
+    byte_order_marks = Counter(
+        entry.get("bom", "unknown") for entry in data["files"].values()
+    )
     return {
         "files": len(data["files"]),
+        "file_formats": {
+            "encodings": dict(encodings.most_common()),
+            "newlines": dict(newlines.most_common()),
+            "byte_order_marks": dict(byte_order_marks.most_common()),
+        },
+        "file_format_locations": {
+            "mixed_newlines": [
+                relative
+                for relative, entry in sorted(data["files"].items())
+                if entry.get("newline") == "mixed"
+            ][:top],
+            "byte_order_marks": [
+                {"file": relative, "bom": entry["bom"]}
+                for relative, entry in sorted(data["files"].items())
+                if entry.get("bom") not in (None, "none")
+            ][:top],
+        },
         "text_statements": len(text_records),
         "active_statements": len(active_records),
         "source_comment_statements": len(source_records),

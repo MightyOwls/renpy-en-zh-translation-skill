@@ -51,6 +51,10 @@ class IndexRpyProjectTests(unittest.TestCase):
         )
 
         self.assertEqual(result["files"], 2)
+        self.assertEqual(result["file_formats"]["newlines"], {"lf": 2})
+        self.assertEqual(
+            result["file_formats"]["byte_order_marks"], {"none": 2}
+        )
         self.assertEqual(result["changed_files"], 2)
         self.assertEqual(result["reused_files"], 0)
         self.assertNotIn("You are late", raw)
@@ -329,6 +333,62 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(result["changed_files"], 1)
         self.assertEqual(result["reused_files"], 1)
         self.assertEqual(result["removed_files"], 0)
+
+    def test_reused_legacy_entries_gain_file_format_metadata(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        data = json.loads(self.index.read_text(encoding="utf-8"))
+        for entry in data["files"].values():
+            entry.pop("newline")
+            entry.pop("bom")
+        self.index.write_text(json.dumps(data), encoding="utf-8")
+
+        result, _ = self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        self.assertEqual(result["changed_files"], 0)
+        self.assertEqual(result["reused_files"], 2)
+        self.assertEqual(result["file_formats"]["newlines"], {"lf": 2})
+        self.assertEqual(
+            result["file_formats"]["byte_order_marks"], {"none": 2}
+        )
+
+    def test_reports_mixed_newlines(self) -> None:
+        story = self.project / "game" / "story.rpy"
+        raw = story.read_bytes()
+        story.write_bytes(b"\xef\xbb\xbf" + raw.replace(b"\n", b"\r\n", 1))
+
+        result, _ = self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        self.assertEqual(
+            result["file_formats"]["newlines"],
+            {"mixed": 1, "lf": 1},
+        )
+        self.assertEqual(
+            result["file_format_locations"]["mixed_newlines"],
+            ["game/story.rpy"],
+        )
+        self.assertEqual(
+            result["file_formats"]["byte_order_marks"],
+            {"utf-8": 1, "none": 1},
+        )
+        self.assertEqual(
+            result["file_format_locations"]["byte_order_marks"],
+            [{"file": "game/story.rpy", "bom": "utf-8"}],
+        )
 
     def test_exclude_glob_avoids_localization_duplicates(self) -> None:
         result, _ = self.run_cli(

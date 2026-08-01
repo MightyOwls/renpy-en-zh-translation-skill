@@ -9,6 +9,7 @@
 | Alter interpolation | Runtime error or wrong value | Exact token comparison | Block completion |
 | Reorder a control tag | Timing or flow changes | Ordered token comparison | Review or block |
 | Skip a short string | Visible untranslated text | Residual-English review | Translate or report |
+| Require every target to contain Han characters | False positives on punctuation, symbols, names, or sound-only lines | Compare source/target change plus residual text | Review no-Han targets instead of failing them automatically |
 | Translate a proper name ad hoc | Terminology drift | Glossary/profile review | Revert or approve |
 | Force one phrase to one translation | Character and context flattening | Scene review | Translate by intent |
 | Infer voice from font alone | False characterization | Evidence review | Sample repeated usage |
