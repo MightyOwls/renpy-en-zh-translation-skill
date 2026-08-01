@@ -73,6 +73,7 @@ python scripts/index_rpy_project.py scan <project> --index <index.json> --exclud
 python scripts/index_rpy_project.py summary --index <index.json>
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 0
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
+python scripts/index_rpy_project.py pilot --index <index.json> --file "routes/<route>.rpy" --start-line <line> --limit 40 --output .renpy-translation/pilot/<scene>.rpy
 ```
 
 Prefer one source-evidence corpus. Scan original scripts while excluding
@@ -94,6 +95,14 @@ it may include narration, internal thought, anonymous speech, or custom modes.
 Treat this lightweight index as a discovery and sampling aid, not as a Ren'Py
 AST or syntax validator. Inspect multiline definitions, custom statements, and
 other forms the index does not classify.
+
+After selecting a representative scene, use `pilot` to create a bounded local
+calibration file from generated source comments. It preserves each original
+`translate` header and duplicates the English source into the active statement;
+it never copies existing targets. Keep the output under an ignored local
+directory because it contains source text. The command refuses stale indexes,
+mixed-newline sources, indexed source-file outputs, and existing outputs unless
+`--overwrite` is explicit.
 
 Treat an initial budget near 100,000 total profiling tokens and a hard review
 point near 150,000 as guidance for a million-word project, not as a guarantee.

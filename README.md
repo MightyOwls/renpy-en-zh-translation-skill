@@ -17,6 +17,7 @@ structure.
 - 保留 speaker、translation block、插值、文本标签、转义、缩进和代码结构。
 - 在批量翻译前建立术语、人物声线、叙事语域和特殊文字通道档案。
 - 使用本地索引扫描大型项目，只向模型提供汇总数据和有限样本。
+- 从注释原文生成有限、干净的本地校准片段，不复制现有译文。
 - 对比注释原文与活动译文，报告配对覆盖和结构差异的位置。
 - 区分受保护标记的增删与仅因中文语序产生的换序。
 - 汇总编码、换行约定和 BOM，定位可能破坏文件格式的混合换行。
@@ -71,6 +72,8 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py summa
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source comments --limit 12 --context 0
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --file "routes/ROUTE_NAME*.rpy" --source comments --limit 12 --context 0
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py pilot --index .renpy-translation/project-index.json --file "routes/ROUTE_NAME.rpy" --start-line 100 --limit 40 --output .renpy-translation/pilot/scene.rpy
 ```
 
 `--file` 接受项目相对的 POSIX 风格 glob，可重复指定；它适合把同一 speaker
@@ -84,6 +87,11 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py sampl
 若现有译文未获准作为风格证据，应从 `--context 0` 开始。上下文是原文件中的
 原始邻行，即使中心样本使用 `--source comments`，邻行仍可能包含活动译文或代码；
 只有在这些内容可被纳入证据时才提高上下文行数。
+
+确定校准场景后，`pilot` 会从注释原文复制限定数量的 statement，并把英文
+副本作为待译的活动目标；现有活动译文不会进入输出。该命令会拒绝过期索引、
+混合换行源文件、覆盖任何已索引源文件，以及未显式指定 `--overwrite` 的已有
+输出。生成文件仍包含游戏原文，必须保存在本地忽略目录，不得提交到公开仓库。
 
 如果扫描原始脚本，应排除生成的本地化树，避免重复统计：
 

@@ -382,6 +382,27 @@ def write_index_atomic(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def write_text_atomic(path: Path, text: str, encoding: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding=encoding,
+        newline="",
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(text)
+        os.replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def scan_project(args: argparse.Namespace) -> int:
     root = Path(args.project).resolve()
     index_path = Path(args.index).resolve()
@@ -844,6 +865,138 @@ def sample_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def find_translate_header(
+    lines: list[str], record: dict[str, Any]
+) -> tuple[int, str]:
+    for index in range(record["line"] - 2, -1, -1):
+        match = TRANSLATE_RE.match(lines[index])
+        if match is None:
+            continue
+        if match.group("block") != record["block"]:
+            raise IndexErrorMessage(
+                f"Indexed block {record['block']!r} no longer matches "
+                f"the header above line {record['line']}"
+            )
+        return index + 1, lines[index]
+    raise IndexErrorMessage(
+        f"Cannot find translate header for indexed line {record['line']}"
+    )
+
+
+def uncomment_source_statement(line: str, line_number: int) -> str:
+    stripped = line.lstrip(" \t")
+    indent = line[: len(line) - len(stripped)]
+    if not stripped.startswith("#"):
+        raise IndexErrorMessage(
+            f"Indexed source-comment line {line_number} is no longer a comment"
+        )
+    statement = stripped[1:]
+    if statement.startswith((" ", "\t")):
+        statement = statement[1:]
+    return indent + statement
+
+
+def pilot_output_encoding(indexed_encoding: str, bom: str) -> str:
+    normalized = indexed_encoding.lower().replace("_", "-")
+    if normalized == "utf-8-sig" and bom == "none":
+        return "utf-8"
+    return indexed_encoding
+
+
+def extract_pilot(args: argparse.Namespace) -> int:
+    index_path = Path(args.index).resolve()
+    data = load_index(index_path)
+    relative = args.file.replace("\\", "/")
+    entry = data["files"].get(relative)
+    if entry is None:
+        raise IndexErrorMessage(f"File is not present in the index: {relative}")
+
+    root = Path(data["project_root"])
+    source_path = (root / relative).resolve()
+    output_path = Path(args.output).resolve()
+    if not source_path.is_file():
+        raise IndexErrorMessage(f"Indexed source does not exist: {relative}")
+    if output_path.suffix.lower() != ".rpy":
+        raise IndexErrorMessage("Pilot output must use the .rpy extension")
+    indexed_paths = {
+        (root / indexed_relative).resolve()
+        for indexed_relative in data["files"]
+    }
+    if output_path in indexed_paths:
+        raise IndexErrorMessage("Pilot output cannot overwrite an indexed source file")
+    if output_path.exists() and not args.overwrite:
+        raise IndexErrorMessage(
+            f"Pilot output already exists; pass --overwrite to replace it: "
+            f"{args.output}"
+        )
+
+    metadata, source_text = inspect_file(source_path, entry["encoding"])
+    if metadata["sha256"] != entry["sha256"]:
+        raise IndexErrorMessage(
+            f"Indexed source has changed; run scan again before extracting: {relative}"
+        )
+    newline_kind = metadata["newline"]
+    if newline_kind not in {"lf", "crlf", "cr"}:
+        raise IndexErrorMessage(
+            f"Source newline convention is {newline_kind!r}; choose a policy "
+            "before creating a pilot"
+        )
+
+    source_lines = source_text.splitlines()
+    records = sorted(
+        (
+            record
+            for record in entry["records"]
+            if record.get("source_comment")
+            and record.get("block")
+            and record["kind"] not in {"old", "new"}
+            and record["line"] >= args.start_line
+        ),
+        key=lambda record: record["line"],
+    )[: args.limit]
+    if len(records) != args.limit:
+        raise IndexErrorMessage(
+            f"Requested {args.limit} source statements but found {len(records)}"
+        )
+
+    output_lines = [
+        "# Local calibration pilot generated from indexed source comments.",
+        "# Active targets initially duplicate the English source.",
+        "# Existing target translations were not copied.",
+    ]
+    current_header_line = None
+    for record in records:
+        header_line, header = find_translate_header(source_lines, record)
+        if header_line != current_header_line:
+            output_lines.extend(("", header, ""))
+            current_header_line = header_line
+        source_line = source_lines[record["line"] - 1]
+        active_line = uncomment_source_statement(source_line, record["line"])
+        output_lines.extend((source_line, active_line, ""))
+
+    newline = {"lf": "\n", "crlf": "\r\n", "cr": "\r"}[newline_kind]
+    encoding = pilot_output_encoding(entry["encoding"], metadata["bom"])
+    write_text_atomic(
+        output_path,
+        newline.join(output_lines) + newline,
+        encoding,
+    )
+    result = {
+        "output": args.output,
+        "source_file": relative,
+        "records": len(records),
+        "first_source_line": records[0]["line"],
+        "last_source_line": records[-1]["line"],
+        "encoding": encoding,
+        "newline": newline_kind,
+        "byte_order_mark": metadata["bom"],
+        "contains_source_text": True,
+        "existing_targets_copied": False,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build and query a bounded-output Ren'Py text index."
@@ -940,6 +1093,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum characters per context line (40-2000).",
     )
     samples.set_defaults(func=sample_index)
+
+    pilot = subparsers.add_parser(
+        "pilot",
+        help="Create a bounded source-only calibration .rpy file.",
+    )
+    pilot.add_argument("--index", required=True, help="Index JSON path.")
+    pilot.add_argument(
+        "--file",
+        required=True,
+        help="One indexed project-relative .rpy file.",
+    )
+    pilot.add_argument(
+        "--start-line",
+        type=int,
+        default=1,
+        help="First source-comment line eligible for extraction.",
+    )
+    pilot.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Exact number of source statements to copy (1-100).",
+    )
+    pilot.add_argument("--output", required=True, help="Local pilot .rpy path.")
+    pilot.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing non-source output file.",
+    )
+    pilot.set_defaults(func=extract_pilot)
     return parser
 
 
@@ -950,6 +1133,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise IndexErrorMessage("--limit must be between 1 and 100")
     if hasattr(args, "context") and not 0 <= args.context <= 10:
         raise IndexErrorMessage("--context must be between 0 and 10")
+    if hasattr(args, "start_line") and args.start_line < 1:
+        raise IndexErrorMessage("--start-line must be at least 1")
     if hasattr(args, "max_chars") and not 40 <= args.max_chars <= 2000:
         raise IndexErrorMessage("--max-chars must be between 40 and 2000")
 

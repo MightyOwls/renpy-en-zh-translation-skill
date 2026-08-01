@@ -42,6 +42,17 @@ class IndexRpyProjectTests(unittest.TestCase):
         )
         return json.loads(completed.stdout), completed.stdout
 
+    def run_cli_failure(self, *args: str) -> subprocess.CompletedProcess[str]:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        return completed
+
     def test_scan_outputs_only_compact_metadata(self) -> None:
         result, raw = self.run_cli(
             "scan",
@@ -222,6 +233,154 @@ class IndexRpyProjectTests(unittest.TestCase):
                 for sample in absent["samples"]
             )
         )
+
+    def test_pilot_extracts_source_comments_without_existing_targets(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        output = self.temp_dir / "pilot.rpy"
+
+        result, raw = self.run_cli(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--start-line",
+            "1",
+            "--limit",
+            "4",
+            "--output",
+            str(output),
+        )
+        pilot = output.read_text(encoding="utf-8")
+
+        self.assertEqual(result["records"], 4)
+        self.assertFalse(result["existing_targets_copied"])
+        self.assertTrue(result["contains_source_text"])
+        self.assertEqual(result["newline"], "lf")
+        self.assertEqual(result["byte_order_mark"], "none")
+        self.assertNotIn("You are late", raw)
+        self.assertEqual(pilot.count("translate schinese start_a1b2c3d4:"), 1)
+        self.assertIn('# duke "You are late, [player_name]."', pilot)
+        self.assertIn('duke "You are late, [player_name]."', pilot)
+        self.assertNotIn("你迟到了", pilot)
+        self.assertFalse(output.read_bytes().startswith(b"\xef\xbb\xbf"))
+
+    def test_pilot_refuses_overwrite_and_stale_index(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        output = self.temp_dir / "pilot.rpy"
+        output.write_text("keep me", encoding="utf-8")
+
+        existing = self.run_cli_failure(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            "1",
+            "--output",
+            str(output),
+        )
+        self.assertIn("already exists", existing.stderr)
+        self.assertEqual(output.read_text(encoding="utf-8"), "keep me")
+
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        localization.write_text(
+            localization.read_text(encoding="utf-8") + "\n# changed\n",
+            encoding="utf-8",
+        )
+        stale = self.run_cli_failure(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            "1",
+            "--output",
+            str(output),
+            "--overwrite",
+        )
+        self.assertIn("run scan again", stale.stderr)
+        self.assertEqual(output.read_text(encoding="utf-8"), "keep me")
+
+    def test_pilot_preserves_utf8_bom_and_crlf(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        raw = localization.read_bytes().replace(b"\r\n", b"\n")
+        localization.write_bytes(b"\xef\xbb\xbf" + raw.replace(b"\n", b"\r\n"))
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        output = self.temp_dir / "pilot.rpy"
+
+        result, _ = self.run_cli(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            "1",
+            "--output",
+            str(output),
+        )
+        pilot_raw = output.read_bytes()
+
+        self.assertEqual(result["newline"], "crlf")
+        self.assertEqual(result["byte_order_mark"], "utf-8")
+        self.assertTrue(pilot_raw.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\n", pilot_raw.replace(b"\r\n", b""))
+
+    def test_pilot_rejects_mixed_newlines_and_indexed_output(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        raw = localization.read_bytes().replace(b"\r\n", b"\n")
+        localization.write_bytes(raw.replace(b"\n", b"\r\n", 1))
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        mixed = self.run_cli_failure(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            "1",
+            "--output",
+            str(self.temp_dir / "pilot.rpy"),
+        )
+        self.assertIn("newline convention is 'mixed'", mixed.stderr)
+
+        indexed = self.run_cli_failure(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            "1",
+            "--output",
+            str(localization),
+            "--overwrite",
+        )
+        self.assertIn("cannot overwrite an indexed source", indexed.stderr)
 
     def test_records_dialogue_attributes_and_source_relative_tags(self) -> None:
         self.run_cli(
