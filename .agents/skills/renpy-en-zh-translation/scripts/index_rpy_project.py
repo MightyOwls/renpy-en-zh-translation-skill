@@ -22,6 +22,17 @@ from typing import Any, Iterable
 
 FORMAT_VERSION = 2
 FILE_RECORD_VERSION = 2
+PROFILE_FORMAT_VERSION = 1
+PROFILE_STATUSES = {"approved", "provisional", "review"}
+CHANNEL_CLASSIFICATIONS = {
+    "voice-bearing",
+    "layout-ui",
+    "glyph-fallback",
+    "redaction",
+    "decorative",
+    "mixed",
+    "unknown",
+}
 STRING = r'(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)(?P=quote)'
 TRANSLATE_RE = re.compile(
     r"^(?P<indent>\s*)translate\s+(?P<language>\w+)\s+"
@@ -442,6 +453,34 @@ def write_index_atomic(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def write_profile_atomic(
+    path: Path, data: dict[str, Any], overwrite: bool
+) -> None:
+    if path.exists() and not overwrite:
+        raise IndexErrorMessage(
+            f"Profile output already exists; use --overwrite: {path}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def write_text_atomic(path: Path, text: str, encoding: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
@@ -548,6 +587,44 @@ def count_markers(
         for record in records
         for marker in dict.fromkeys(record.get(field, []))
     )
+
+
+def select_profile_evidence(
+    text_records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    active_records = [
+        record for record in text_records if not record["source_comment"]
+    ]
+    source_records = [
+        record for record in text_records if record["source_comment"]
+    ]
+    old_records = [
+        record for record in active_records if record["kind"] == "old"
+    ]
+    new_records = [
+        record for record in active_records if record["kind"] == "new"
+    ]
+    if source_records:
+        source_evidence = source_records + old_records
+        target_records = [
+            record for record in active_records if record["kind"] != "old"
+        ]
+        source_mode = (
+            "source_comments_and_old"
+            if old_records
+            else "source_comments"
+        )
+    elif old_records:
+        source_evidence = [
+            record for record in active_records if record["kind"] != "new"
+        ]
+        target_records = new_records
+        source_mode = "active_statements_and_old"
+    else:
+        source_evidence = active_records
+        target_records = []
+        source_mode = "active_statements"
+    return source_evidence, target_records, source_mode
 
 
 def visible_quote_edges(text: str) -> tuple[bool, bool]:
@@ -712,32 +789,9 @@ def compact_summary(data: dict[str, Any], top: int = 20) -> dict[str, Any]:
     source_records = [
         record for record in text_records if record["source_comment"]
     ]
-    old_records = [
-        record for record in active_records if record["kind"] == "old"
-    ]
-    new_records = [
-        record for record in active_records if record["kind"] == "new"
-    ]
-    if source_records:
-        source_evidence = source_records + old_records
-        target_records = [
-            record for record in active_records if record["kind"] != "old"
-        ]
-        profile_source = (
-            "source_comments_and_old"
-            if old_records
-            else "source_comments"
-        )
-    elif old_records:
-        source_evidence = [
-            record for record in active_records if record["kind"] != "new"
-        ]
-        target_records = new_records
-        profile_source = "active_statements_and_old"
-    else:
-        source_evidence = active_records
-        target_records = []
-        profile_source = "active_statements"
+    source_evidence, target_records, profile_source = select_profile_evidence(
+        text_records
+    )
     profile_records = source_evidence
     speakers = count_speakers(profile_records)
     source_speakers = count_speakers(source_evidence)
@@ -836,6 +890,433 @@ def evenly_spaced(records: list[dict[str, Any]], limit: int) -> list[dict[str, A
         for position in range(limit)
     }
     return [records[index] for index in sorted(indices)]
+
+
+def profile_evidence_components(
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    records = list(iter_records(data))
+    character_records = [
+        record for record in records if record["kind"] == "character_definition"
+    ]
+    text_records = [
+        record for record in records if record["kind"] != "character_definition"
+    ]
+    source_evidence, _, source_mode = select_profile_evidence(text_records)
+    source_evidence.sort(key=lambda item: (item["file"], item["line"]))
+    return character_records, source_evidence, source_mode
+
+
+def profile_evidence_sha256(
+    character_records: Iterable[dict[str, Any]],
+    source_evidence: Iterable[dict[str, Any]],
+) -> str:
+    fingerprints = []
+    for record in character_records:
+        fingerprints.append(
+            (
+                "character",
+                record["file"],
+                record["line"],
+                record.get("speaker"),
+                record.get("display_name"),
+                record.get("fonts", []),
+                record.get("colors", []),
+            )
+        )
+    for record in source_evidence:
+        fingerprints.append(
+            (
+                "text",
+                record["file"],
+                record["line"],
+                *source_record_fingerprint(record),
+            )
+        )
+    serialized = json.dumps(
+        fingerprints,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def profile_location(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "file": record["file"],
+        "line": record["line"],
+        "kind": record["kind"],
+    }
+
+
+def ordered_marker_counts(
+    records: Iterable[dict[str, Any]], field: str
+) -> list[tuple[str, int]]:
+    counts = count_markers(records, field)
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def draft_profile(args: argparse.Namespace) -> int:
+    index_path = Path(args.index).resolve()
+    output_path = Path(args.output).resolve()
+    if output_path == index_path:
+        raise IndexErrorMessage("Profile output must not replace the index")
+
+    data = load_index(index_path)
+    character_records, source_evidence, source_mode = (
+        profile_evidence_components(data)
+    )
+    speaker_counts = count_speakers(source_evidence)
+    if args.speaker:
+        selected_speakers = list(dict.fromkeys(args.speaker))
+        missing = [
+            speaker for speaker in selected_speakers if speaker not in speaker_counts
+        ]
+        if missing:
+            raise IndexErrorMessage(
+                "Speakers lack source evidence: " + ", ".join(missing)
+            )
+    else:
+        selected_speakers = [
+            speaker
+            for speaker, _ in sorted(
+                speaker_counts.items(), key=lambda item: (-item[1], item[0])
+            )[: args.top]
+        ]
+
+    characters: dict[str, Any] = {}
+    for speaker in selected_speakers:
+        definitions = [
+            record
+            for record in character_records
+            if record.get("speaker") == speaker
+        ]
+        statements = [
+            record
+            for record in source_evidence
+            if record.get("speaker") == speaker
+        ]
+        display_names = list(
+            dict.fromkeys(
+                record["display_name"]
+                for record in definitions
+                if record.get("display_name") is not None
+            )
+        )
+        marker_records = definitions + statements
+        sample_records = evenly_spaced(statements, args.limit)
+        characters[speaker] = {
+            "display_name": display_names[0] if len(display_names) == 1 else None,
+            "display_name_candidates": display_names,
+            "markers": {
+                "speakers": [speaker],
+                "fonts": sorted(
+                    count_markers(marker_records, "fonts").keys()
+                ),
+                "colors": sorted(
+                    count_markers(marker_records, "colors").keys()
+                ),
+            },
+            "register": None,
+            "rhythm": None,
+            "address_terms": {},
+            "preferred_features": [],
+            "avoid": [],
+            "relationship_variants": {},
+            "evidence": {
+                "statement_count": len(statements),
+                "locations": [
+                    profile_location(record) for record in sample_records
+                ],
+                "definition_locations": [
+                    profile_location(record) for record in definitions
+                ],
+            },
+            "status": "review",
+        }
+
+    channels: dict[str, Any] = {}
+    marker_source = character_records + source_evidence
+    for field, marker_type in (("fonts", "font"), ("colors", "color")):
+        for marker, _ in ordered_marker_counts(marker_source, field)[
+            : args.top
+        ]:
+            matching = [
+                record
+                for record in marker_source
+                if marker in record.get(field, [])
+            ]
+            text_matching = [
+                record
+                for record in matching
+                if record["kind"] != "character_definition"
+            ]
+            samples = evenly_spaced(matching, min(5, args.limit))
+            channels[f"{marker_type}:{marker}"] = {
+                "marker_type": marker_type,
+                "marker": marker,
+                "markers": {
+                    "speakers": sorted(
+                        {
+                            record["speaker"]
+                            for record in matching
+                            if record.get("speaker") is not None
+                        }
+                    ),
+                    "fonts": [marker] if marker_type == "font" else [],
+                    "colors": [marker] if marker_type == "color" else [],
+                },
+                "classification": "unknown",
+                "register": None,
+                "preferred_features": [],
+                "avoid": [],
+                "evidence": {
+                    "statement_count": len(text_matching),
+                    "locations": [
+                        profile_location(record) for record in samples
+                    ],
+                },
+                "status": "review",
+            }
+
+    profile = {
+        "profile_format_version": PROFILE_FORMAT_VERSION,
+        "language": {"source": "en", "target": "zh-Hans"},
+        "source": {
+            "index_format_version": data["format_version"],
+            "evidence_sha256": profile_evidence_sha256(
+                character_records, source_evidence
+            ),
+            "files": len(data["files"]),
+            "evidence_mode": source_mode,
+        },
+        "defaults": {
+            "register": None,
+            "dialect_policy": None,
+            "archaic_language": None,
+            "font_tag_policy": "preserve-source",
+            "status": "review",
+        },
+        "typography_exceptions": [],
+        "characters": characters,
+        "channels": channels,
+    }
+    write_profile_atomic(output_path, profile, args.overwrite)
+    result = {
+        "status": "created",
+        "profile": str(output_path),
+        "evidence_mode": source_mode,
+        "characters": len(characters),
+        "channels": len(channels),
+        "speaker_sample_locations": sum(
+            len(entry["evidence"]["locations"]) for entry in characters.values()
+        ),
+        "channel_sample_locations": sum(
+            len(entry["evidence"]["locations"]) for entry in channels.values()
+        ),
+        "approval_status": "review",
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def load_profile(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise IndexErrorMessage(f"Profile does not exist: {path}") from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise IndexErrorMessage(f"Invalid profile {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise IndexErrorMessage(f"Profile root must be an object: {path}")
+    return data
+
+
+def check_profile(args: argparse.Namespace) -> int:
+    profile_path = Path(args.profile).resolve()
+    profile = load_profile(profile_path)
+    hard_failures: list[dict[str, str]] = []
+    review_items: list[dict[str, str]] = []
+    status_counts: Counter[str] = Counter()
+
+    def hard(path: str, reason: str) -> None:
+        hard_failures.append({"path": path, "reason": reason})
+
+    def check_status(path: str, value: Any) -> str | None:
+        if value not in PROFILE_STATUSES:
+            hard(f"{path}.status", "invalid_status")
+            return None
+        status_counts[value] += 1
+        if value != "approved":
+            review_items.append(
+                {"path": path, "reason": f"status_{value}"}
+            )
+        return value
+
+    def check_locations(path: str, value: Any) -> int:
+        if not isinstance(value, list):
+            hard(path, "locations_must_be_a_list")
+            return 0
+        valid = 0
+        for index, location in enumerate(value):
+            item_path = f"{path}[{index}]"
+            if not isinstance(location, dict):
+                hard(item_path, "location_must_be_an_object")
+                continue
+            if not isinstance(location.get("file"), str) or not location["file"]:
+                hard(f"{item_path}.file", "invalid_file")
+            elif not isinstance(location.get("line"), int) or location["line"] < 1:
+                hard(f"{item_path}.line", "invalid_line")
+            else:
+                valid += 1
+        return valid
+
+    def check_markers(path: str, value: Any) -> None:
+        if not isinstance(value, dict):
+            hard(path, "markers_must_be_an_object")
+            return
+        for field in ("speakers", "fonts", "colors"):
+            markers = value.get(field)
+            if not isinstance(markers, list) or not all(
+                isinstance(marker, str) for marker in markers
+            ):
+                hard(f"{path}.{field}", "markers_must_be_strings")
+
+    if profile.get("profile_format_version") != PROFILE_FORMAT_VERSION:
+        hard("profile_format_version", "unsupported_version")
+    language = profile.get("language")
+    if not isinstance(language, dict):
+        hard("language", "language_must_be_an_object")
+    elif language.get("source") != "en" or language.get("target") != "zh-Hans":
+        hard("language", "expected_en_to_zh_hans")
+
+    source = profile.get("source")
+    stored_evidence_digest = None
+    if not isinstance(source, dict):
+        hard("source", "source_must_be_an_object")
+    else:
+        stored_evidence_digest = source.get("evidence_sha256")
+        if not isinstance(stored_evidence_digest, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", stored_evidence_digest
+        ):
+            hard("source.evidence_sha256", "invalid_sha256")
+
+    defaults = profile.get("defaults")
+    if not isinstance(defaults, dict):
+        hard("defaults", "defaults_must_be_an_object")
+    else:
+        defaults_status = check_status("defaults", defaults.get("status"))
+        if defaults_status == "approved":
+            for field in (
+                "register",
+                "dialect_policy",
+                "archaic_language",
+                "font_tag_policy",
+            ):
+                if not isinstance(defaults.get(field), str) or not defaults[field]:
+                    hard(f"defaults.{field}", "approved_value_required")
+
+    for collection_name in ("characters", "channels"):
+        collection = profile.get(collection_name)
+        if not isinstance(collection, dict):
+            hard(collection_name, "collection_must_be_an_object")
+            continue
+        for key, entry in collection.items():
+            path = f"{collection_name}.{key}"
+            if not isinstance(key, str) or not key:
+                hard(collection_name, "entry_key_must_be_a_string")
+                continue
+            if not isinstance(entry, dict):
+                hard(path, "entry_must_be_an_object")
+                continue
+            entry_status = check_status(path, entry.get("status"))
+            markers = entry.get("markers")
+            check_markers(f"{path}.markers", markers)
+            evidence = entry.get("evidence")
+            valid_locations = 0
+            if not isinstance(evidence, dict):
+                hard(f"{path}.evidence", "evidence_must_be_an_object")
+            else:
+                valid_locations = check_locations(
+                    f"{path}.evidence.locations", evidence.get("locations")
+                )
+            if entry_status == "approved" and valid_locations == 0:
+                hard(f"{path}.evidence", "approved_evidence_required")
+            if collection_name == "characters":
+                speakers = (
+                    markers.get("speakers", [])
+                    if isinstance(markers, dict)
+                    else []
+                )
+                if isinstance(markers, dict) and key not in speakers:
+                    hard(f"{path}.markers.speakers", "character_key_missing")
+                if entry_status == "approved":
+                    for field in ("register", "rhythm"):
+                        if (
+                            not isinstance(entry.get(field), str)
+                            or not entry[field]
+                        ):
+                            hard(f"{path}.{field}", "approved_value_required")
+            else:
+                classification = entry.get("classification")
+                if classification not in CHANNEL_CLASSIFICATIONS:
+                    hard(f"{path}.classification", "invalid_classification")
+                elif entry_status == "approved" and classification == "unknown":
+                    hard(f"{path}.classification", "approved_value_required")
+
+    exceptions = profile.get("typography_exceptions")
+    if not isinstance(exceptions, list):
+        hard("typography_exceptions", "exceptions_must_be_a_list")
+    else:
+        for index, exception in enumerate(exceptions):
+            path = f"typography_exceptions[{index}]"
+            if not isinstance(exception, dict):
+                hard(path, "exception_must_be_an_object")
+                continue
+            exception_status = check_status(path, exception.get("status"))
+            if exception_status == "approved":
+                for field in ("marker", "target_action", "reason", "scope"):
+                    if not isinstance(exception.get(field), str) or not exception[field]:
+                        hard(f"{path}.{field}", "approved_value_required")
+
+    source_evidence_matches_index: bool | None = None
+    if args.index is not None:
+        index_data = load_index(Path(args.index).resolve())
+        characters, evidence, _ = profile_evidence_components(index_data)
+        current_digest = profile_evidence_sha256(characters, evidence)
+        source_evidence_matches_index = current_digest == stored_evidence_digest
+        if source_evidence_matches_index is False:
+            review_items.append(
+                {"path": "source.evidence_sha256", "reason": "index_changed"}
+            )
+
+    status = (
+        "fail"
+        if hard_failures
+        else "review"
+        if review_items
+        else "pass"
+    )
+    result = {
+        "status": status,
+        "profile": str(profile_path),
+        "characters": len(profile.get("characters", {}))
+        if isinstance(profile.get("characters"), dict)
+        else 0,
+        "channels": len(profile.get("channels", {}))
+        if isinstance(profile.get("channels"), dict)
+        else 0,
+        "approval_statuses": dict(status_counts),
+        "source_evidence_matches_index": source_evidence_matches_index,
+        "hard_failure_count": len(hard_failures),
+        "hard_failures": hard_failures[: args.top],
+        "review_item_count": len(review_items),
+        "review_items": review_items[: args.top],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if status == "fail" or (args.strict and status == "review"):
+        return 1
+    return 0
 
 
 def truncate_line(text: str, max_chars: int) -> str:
@@ -1441,6 +1922,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     samples.set_defaults(func=sample_index)
 
+    profile_draft = subparsers.add_parser(
+        "profile-draft",
+        help="Create an evidence-only project profile draft without dialogue.",
+    )
+    profile_draft.add_argument(
+        "--index", required=True, help="Index JSON path."
+    )
+    profile_draft.add_argument(
+        "--output", required=True, help="Local project profile JSON path."
+    )
+    profile_draft.add_argument(
+        "--speaker",
+        action="append",
+        default=[],
+        help=(
+            "Include one exact source-evidence speaker; repeat as needed. "
+            "Without this option, use the most frequent speakers."
+        ),
+    )
+    profile_draft.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Maximum automatic speakers and markers per type (1-100).",
+    )
+    profile_draft.add_argument(
+        "--limit",
+        type=int,
+        default=12,
+        help="Maximum evidence locations per speaker (1-20).",
+    )
+    profile_draft.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing profile draft.",
+    )
+    profile_draft.set_defaults(func=draft_profile)
+
+    profile_check = subparsers.add_parser(
+        "profile-check",
+        help="Validate profile structure, approvals, and optional index freshness.",
+    )
+    profile_check.add_argument("profile", help="Project profile JSON path.")
+    profile_check.add_argument(
+        "--index",
+        help="Optional current index for source-evidence freshness review.",
+    )
+    profile_check.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Maximum hard failures and review items to return.",
+    )
+    profile_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return failure for unresolved review items.",
+    )
+    profile_check.set_defaults(func=check_profile)
+
     pilot = subparsers.add_parser(
         "pilot",
         help="Create a bounded source-only calibration .rpy file.",
@@ -1529,6 +2070,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise IndexErrorMessage("--expected-targets must be at least 1")
     if hasattr(args, "max_chars") and not 40 <= args.max_chars <= 2000:
         raise IndexErrorMessage("--max-chars must be between 40 and 2000")
+    if args.command == "profile-draft" and args.top > 100:
+        raise IndexErrorMessage("--top must be between 1 and 100")
+    if args.command == "profile-draft" and args.limit > 20:
+        raise IndexErrorMessage("--limit must be between 1 and 20")
 
 
 def configure_utf8_output() -> None:

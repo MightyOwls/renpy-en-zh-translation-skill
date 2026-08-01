@@ -73,6 +73,8 @@ python scripts/index_rpy_project.py scan <project> --index <index.json> --exclud
 python scripts/index_rpy_project.py summary --index <index.json>
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 0
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
+python scripts/index_rpy_project.py profile-draft --index <index.json> --output .renpy-translation/project-profile.json --speaker <id> --speaker <id>
+python scripts/index_rpy_project.py profile-check .renpy-translation/project-profile.json --index <index.json>
 python scripts/index_rpy_project.py pilot --index <index.json> --file "routes/<route>.rpy" --start-line <line> --limit 40 --output .renpy-translation/pilot/<scene>.rpy
 python scripts/index_rpy_project.py check .renpy-translation/pilot/<scene>.rpy --index <index.json> --source-file "routes/<route>.rpy" --expected-targets 40
 python scripts/index_rpy_project.py check "routes/<route>.rpy" --index <index.json> --source-file "routes/<route>.rpy"
@@ -145,6 +147,24 @@ When no approved project profile exists:
 
 For a small, low-risk request, use a provisional in-memory profile and report
 assumptions instead of creating persistent project metadata without permission.
+
+For an approved persistent local profile, use `profile-draft` to create a JSON
+draft containing stable identifiers, marker candidates, source-evidence counts,
+and bounded file/line locations without dialogue text. Specify repeated
+`--speaker` values when the user has identified priority characters; otherwise
+the command selects frequent source-evidence speakers. Treat abbreviated
+speaker identifiers, display names, filenames, and route names as separate
+evidence until their mapping is confirmed.
+
+Every generated default, character, and channel starts with `status=review`.
+Inspect the planned locations with bounded `samples`, write only evidence-backed
+observations, and request approval for high-impact choices before changing a
+status to `approved`. Classify generated font and color channels before assigning
+a register; `classification=unknown` cannot be approved. Run `profile-check`
+with the current index to detect invalid approvals or changed source evidence.
+Use `--strict` only when the current workflow requires every profile item to be
+approved. Keep the JSON draft local unless the user explicitly authorizes
+sharing project-specific identifiers and evidence locations.
 
 ## Translate by scene
 

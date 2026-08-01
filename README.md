@@ -74,6 +74,10 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py sampl
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --file "routes/ROUTE_NAME*.rpy" --source comments --limit 12 --context 0
 
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py profile-draft --index .renpy-translation/project-index.json --output .renpy-translation/project-profile.json --speaker SPEAKER_ID
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py profile-check .renpy-translation/project-profile.json --index .renpy-translation/project-index.json
+
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py pilot --index .renpy-translation/project-index.json --file "routes/ROUTE_NAME.rpy" --start-line 100 --limit 40 --output .renpy-translation/pilot/scene.rpy
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check .renpy-translation/pilot/scene.rpy --index .renpy-translation/project-index.json --source-file "routes/ROUTE_NAME.rpy" --expected-targets 40
@@ -92,6 +96,17 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check
 若现有译文未获准作为风格证据，应从 `--context 0` 开始。上下文是原文件中的
 原始邻行，即使中心样本使用 `--source comments`，邻行仍可能包含活动译文或代码；
 只有在这些内容可被纳入证据时才提高上下文行数。
+
+`profile-draft` 会生成本地 JSON 档案草案，包含 speaker、字体、颜色、数量和有限
+文件/行号，不包含台词。可重复使用 `--speaker` 指定优先角色；若省略，工具选择
+高频源证据 speaker。所有默认规则、人物和特殊频道都以 `status=review` 创建，
+字体及颜色频道的初始分类为 `unknown`。speaker 缩写、显示名、路线名和角色文件名
+不能自动视为同一身份，必须根据项目证据确认。
+
+使用有限 `samples` 填写可观察的声线特征，取得用户确认后再把对应状态改为
+`approved`。`profile-check` 会检查无证据批准、未分类频道和当前索引的源证据
+变化；加 `--strict` 后，任何仍待确认的项目都会阻止自动流程。项目档案包含
+专有标识和证据位置，未经明确授权也应留在本地忽略目录。
 
 确定校准场景后，`pilot` 会从注释原文复制限定数量的 statement，并把英文
 副本作为待译的活动目标；现有活动译文不会进入输出。该命令会拒绝过期索引、

@@ -17,6 +17,8 @@
 | Force one phrase to one translation | Character and context flattening | Scene review | Translate by intent |
 | Infer voice from font alone | False characterization | Evidence review | Sample repeated usage |
 | Treat fallback, UI, or redaction fonts as voices | False characterization | Marker-role classification | Exclude from voice profile |
+| Treat a speaker abbreviation or filename as a confirmed display name | Wrong character mapping | Profile evidence review | Confirm definitions and project mapping |
+| Auto-approve a generated voice profile | Unsupported style becomes project policy | Profile status validation | Generate `review` entries and require confirmation |
 | Remove a source font without a policy | Unreviewed visual drift | Typography-exception review | Preserve or seek approval |
 | Apply a regional dialect by stereotype | Adds unsupported setting | Voice-profile review | Use neutral register cues |
 | Load a whole large corpus into context | Excessive token use | Workflow audit | Index locally and sample |

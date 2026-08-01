@@ -146,6 +146,225 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertTrue(samples["samples"][0]["source_comment"])
         self.assertLessEqual(len(samples["samples"][0]["context"]), 3)
 
+    def test_profile_draft_is_evidence_only_and_requires_review(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        profile_path = self.temp_dir / "project-profile.json"
+
+        result, raw = self.run_cli(
+            "profile-draft",
+            "--index",
+            str(self.index),
+            "--output",
+            str(profile_path),
+            "--speaker",
+            "duke",
+            "--speaker",
+            "drifter",
+            "--limit",
+            "2",
+            "--top",
+            "2",
+        )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["characters"], 2)
+        self.assertEqual(result["approval_status"], "review")
+        self.assertEqual(profile["defaults"]["status"], "review")
+        self.assertEqual(set(profile["characters"]), {"duke", "drifter"})
+        self.assertEqual(profile["characters"]["duke"]["status"], "review")
+        self.assertIn(
+            "fonts/noble.ttf",
+            profile["characters"]["duke"]["markers"]["fonts"],
+        )
+        self.assertIn("font:fonts/mask.ttf", profile["channels"])
+        self.assertNotIn("You are late", raw)
+        self.assertNotIn("You are late", profile_path.read_text(encoding="utf-8"))
+
+        check, check_raw = self.run_cli(
+            "profile-check",
+            str(profile_path),
+            "--index",
+            str(self.index),
+        )
+        self.assertEqual(check["status"], "review")
+        self.assertTrue(check["source_evidence_matches_index"])
+        self.assertGreater(check["review_item_count"], 0)
+        self.assertNotIn("You are late", check_raw)
+
+        duplicate = self.run_cli_failure(
+            "profile-draft",
+            "--index",
+            str(self.index),
+            "--output",
+            str(profile_path),
+        )
+        self.assertIn("use --overwrite", duplicate.stderr)
+
+    def test_profile_check_accepts_approval_and_rejects_empty_evidence(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        profile_path = self.temp_dir / "approved-profile.json"
+        self.run_cli(
+            "profile-draft",
+            "--index",
+            str(self.index),
+            "--output",
+            str(profile_path),
+            "--speaker",
+            "duke",
+            "--top",
+            "1",
+        )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile["channels"] = {}
+        profile["defaults"].update(
+            {
+                "register": "natural-contemporary",
+                "dialect_policy": "no-regional-dialect",
+                "archaic_language": "restricted",
+                "status": "approved",
+            }
+        )
+        profile["characters"]["duke"].update(
+            {
+                "register": "formal-controlled",
+                "rhythm": "complete-sentences",
+                "status": "approved",
+            }
+        )
+        profile_path.write_text(
+            json.dumps(profile, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        result, raw = self.run_cli(
+            "profile-check",
+            str(profile_path),
+            "--index",
+            str(self.index),
+            "--strict",
+        )
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["approval_statuses"], {"approved": 2})
+        self.assertNotIn("You are late", raw)
+
+        profile["characters"]["duke"]["register"] = None
+        profile_path.write_text(
+            json.dumps(profile, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        incomplete = self.run_cli_failure(
+            "profile-check",
+            str(profile_path),
+            "--index",
+            str(self.index),
+        )
+        incomplete_result = json.loads(incomplete.stdout)
+        self.assertTrue(
+            any(
+                item["path"] == "characters.duke.register"
+                for item in incomplete_result["hard_failures"]
+            )
+        )
+
+        profile["characters"]["duke"]["register"] = "formal-controlled"
+        profile["characters"]["duke"]["evidence"]["locations"] = []
+        profile_path.write_text(
+            json.dumps(profile, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        completed = self.run_cli_failure(
+            "profile-check",
+            str(profile_path),
+            "--index",
+            str(self.index),
+        )
+        failed = json.loads(completed.stdout)
+        self.assertEqual(failed["status"], "fail")
+        self.assertTrue(
+            any(
+                item["reason"] == "approved_evidence_required"
+                for item in failed["hard_failures"]
+            )
+        )
+
+        profile["characters"]["duke"]["markers"] = []
+        profile_path.write_text(
+            json.dumps(profile, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        malformed = self.run_cli_failure(
+            "profile-check",
+            str(profile_path),
+        )
+        malformed_result = json.loads(malformed.stdout)
+        self.assertTrue(
+            any(
+                item["reason"] == "markers_must_be_an_object"
+                for item in malformed_result["hard_failures"]
+            )
+        )
+
+    def test_profile_check_reports_changed_source_evidence(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        profile_path = self.temp_dir / "stale-profile.json"
+        self.run_cli(
+            "profile-draft",
+            "--index",
+            str(self.index),
+            "--output",
+            str(profile_path),
+            "--speaker",
+            "duke",
+            "--top",
+            "1",
+        )
+
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        text = localization.read_text(encoding="utf-8")
+        localization.write_text(
+            text.replace("You are late", "You arrived late", 1),
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        result, raw = self.run_cli(
+            "profile-check",
+            str(profile_path),
+            "--index",
+            str(self.index),
+        )
+        self.assertEqual(result["status"], "review")
+        self.assertFalse(result["source_evidence_matches_index"])
+        self.assertTrue(
+            any(
+                item["reason"] == "index_changed"
+                for item in result["review_items"]
+            )
+        )
+        self.assertNotIn("You arrived late", raw)
+
     def test_samples_filter_by_project_relative_file_glob(self) -> None:
         self.run_cli(
             "scan",
