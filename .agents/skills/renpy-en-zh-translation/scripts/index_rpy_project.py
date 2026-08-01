@@ -48,6 +48,12 @@ TAG_RE = re.compile(r"\{[^{}\r\n]+\}")
 FONT_RE = re.compile(r"\{font=([^{}\r\n]+)\}")
 COLOR_RE = re.compile(r"\{color=([^{}\r\n]+)\}")
 INTERPOLATION_RE = re.compile(r"\[[^\[\]\r\n]+\]")
+PERCENT_FORMAT_RE = re.compile(
+    r"%(?:\([^)]+\))?[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?"
+    r"[diouxXeEfFgGcrsa%]"
+)
+LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+HAN_RE = re.compile(r"[\u3400-\u9fff]")
 QUOTED_RE = re.compile(r'(["\'])(.*?)(?<!\\)\1')
 VISIBLE_OPENING_QUOTES = ('\\"', "“", "「", "『")
 VISIBLE_CLOSING_QUOTES = ('\\"', "”", "」", "』")
@@ -55,10 +61,13 @@ PAIR_DIFFERENCE_FIELDS = (
     "statement_role",
     "speaker",
     "attributes",
+    "indentation",
     "tag_tokens",
     "tag_order",
     "interpolation_tokens",
     "interpolation_order",
+    "percent_format_tokens",
+    "percent_format_order",
     "visible_quote_edges",
 )
 
@@ -505,6 +514,8 @@ def compare_record_pair(
         differences["speaker"] += 1
     if source.get("attributes") != target.get("attributes"):
         differences["attributes"] += 1
+    if source.get("indent") != target.get("indent"):
+        differences["indentation"] += 1
     source_tags = source.get("tags", [])
     target_tags = target.get("tags", [])
     if Counter(source_tags) != Counter(target_tags):
@@ -517,6 +528,12 @@ def compare_record_pair(
         differences["interpolation_tokens"] += 1
     elif source_interpolations != target_interpolations:
         differences["interpolation_order"] += 1
+    source_percent_formats = PERCENT_FORMAT_RE.findall(source["text"])
+    target_percent_formats = PERCENT_FORMAT_RE.findall(target["text"])
+    if Counter(source_percent_formats) != Counter(target_percent_formats):
+        differences["percent_format_tokens"] += 1
+    elif source_percent_formats != target_percent_formats:
+        differences["percent_format_order"] += 1
     if visible_quote_edges(source["text"]) != visible_quote_edges(target["text"]):
         differences["visible_quote_edges"] += 1
     return {
@@ -997,6 +1014,259 @@ def extract_pilot(args: argparse.Namespace) -> int:
     return 0
 
 
+def calibration_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in records
+        if record.get("block") is not None
+        and record["kind"] not in {"character_definition", "old", "new"}
+    ]
+
+
+def source_record_fingerprint(record: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        record.get("block"),
+        record.get("kind"),
+        record.get("speaker"),
+        record.get("attributes"),
+        record.get("indent"),
+        record.get("text"),
+    )
+
+
+def pair_commented_records(
+    records: Iterable[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for record in calibration_records(records):
+        block = record["block"]
+        side = "source" if record["source_comment"] else "target"
+        groups.setdefault(block, {"source": [], "target": []})[side].append(
+            record
+        )
+    return [
+        pair
+        for group in groups.values()
+        for pair in zip(group["source"], group["target"])
+    ]
+
+
+def translate_header_counts(text: str) -> Counter[tuple[str, str]]:
+    headers: Counter[tuple[str, str]] = Counter()
+    for line in text.splitlines():
+        match = TRANSLATE_RE.match(line)
+        if match is not None:
+            headers[(match.group("block"), line)] += 1
+    return headers
+
+
+def bounded_locations(
+    records: Iterable[dict[str, Any]], top: int
+) -> list[int]:
+    return [record["line"] for record in records][:top]
+
+
+def check_translation(args: argparse.Namespace) -> int:
+    data = load_index(Path(args.index).resolve())
+    relative = args.source_file.replace("\\", "/")
+    source_entry = data["files"].get(relative)
+    if source_entry is None:
+        raise IndexErrorMessage(f"File is not present in the index: {relative}")
+
+    pilot_path = Path(args.pilot).resolve()
+    if not pilot_path.is_file():
+        raise IndexErrorMessage(f"Pilot file does not exist: {args.pilot}")
+    pilot_metadata, pilot_text = inspect_file(
+        pilot_path, source_entry["encoding"]
+    )
+    pilot_records = parse_text(pilot_text)
+    named_pilot_records = [
+        {"file": pilot_path.name, **record}
+        for record in pilot_records
+    ]
+    pairing = summarize_pairs(
+        named_pilot_records,
+        source_kind="comments",
+        top=args.top,
+    )
+    relevant_records = calibration_records(pilot_records)
+    sources = [record for record in relevant_records if record["source_comment"]]
+    targets = [record for record in relevant_records if not record["source_comment"]]
+    pairs = pair_commented_records(pilot_records)
+
+    indexed_source_counts = Counter(
+        source_record_fingerprint(record)
+        for record in calibration_records(source_entry["records"])
+        if record["source_comment"]
+    )
+    unmatched_sources = []
+    for record in sources:
+        fingerprint = source_record_fingerprint(record)
+        if indexed_source_counts[fingerprint]:
+            indexed_source_counts[fingerprint] -= 1
+        else:
+            unmatched_sources.append(record)
+
+    project_root = Path(data["project_root"])
+    indexed_source_path = (project_root / relative).resolve()
+    source_index_current = False
+    source_text = None
+    if indexed_source_path.is_file():
+        current_metadata, source_text = inspect_file(
+            indexed_source_path, source_entry["encoding"]
+        )
+        source_index_current = current_metadata["sha256"] == source_entry["sha256"]
+
+    source_headers_match = None
+    if source_index_current and source_text is not None:
+        source_headers = translate_header_counts(source_text)
+        pilot_headers = translate_header_counts(pilot_text)
+        source_headers_match = not bool(pilot_headers - source_headers)
+
+    expected_format_available = all(
+        key in source_entry for key in ("newline", "bom")
+    )
+    format_matches_source = None
+    if expected_format_available:
+        format_matches_source = (
+            pilot_metadata["newline"] == source_entry["newline"]
+            and pilot_metadata["bom"] == source_entry["bom"]
+        )
+
+    empty_targets = [
+        record for record in targets if not str(record["text"]).strip()
+    ]
+    unchanged_targets = [
+        target
+        for source, target in pairs
+        if source["text"] == target["text"]
+    ]
+    allowed_latin = {word.casefold() for word in args.allowed_latin}
+    latin_residuals = []
+    targets_without_han = []
+    for record in targets:
+        text = str(record["text"])
+        searchable = TAG_RE.sub("", text)
+        searchable = INTERPOLATION_RE.sub("", searchable)
+        searchable = PERCENT_FORMAT_RE.sub("", searchable)
+        residual_words = [
+            word
+            for word in LATIN_WORD_RE.findall(searchable)
+            if word.casefold() not in allowed_latin
+        ]
+        if residual_words:
+            latin_residuals.append(
+                {"line": record["line"], "word_count": len(residual_words)}
+            )
+        if not HAN_RE.search(text):
+            targets_without_han.append(record)
+
+    outside_or_unsupported = [
+        record
+        for record in pilot_records
+        if record["kind"] != "character_definition"
+        and (
+            record.get("block") is None
+            or record["kind"] in {"old", "new"}
+        )
+    ]
+    differences = pairing["structural_differences"]
+    review_order_fields = (
+        "tag_order",
+        "interpolation_order",
+        "percent_format_order",
+    )
+    hard_structural_fields = tuple(
+        field
+        for field in PAIR_DIFFERENCE_FIELDS
+        if field not in review_order_fields
+    )
+
+    hard_failures = []
+    if len(sources) != args.expected_targets:
+        hard_failures.append("source_comment_count")
+    if len(targets) != args.expected_targets:
+        hard_failures.append("active_target_count")
+    if (
+        pairing["count_mismatch_blocks"]
+        or pairing["source_only_blocks"]
+        or pairing["target_only_blocks"]
+    ):
+        hard_failures.append("pairing_coverage")
+    if unmatched_sources:
+        hard_failures.append("source_comment_integrity")
+    if not source_index_current:
+        hard_failures.append("stale_source_index")
+    if source_headers_match is False:
+        hard_failures.append("translate_headers")
+    if format_matches_source is False:
+        hard_failures.append("file_format")
+    if empty_targets:
+        hard_failures.append("empty_targets")
+    if outside_or_unsupported:
+        hard_failures.append("unsupported_statements")
+    hard_failures.extend(
+        field for field in hard_structural_fields if differences[field]
+    )
+
+    review_flags = []
+    if unchanged_targets:
+        review_flags.append("unchanged_targets")
+    if latin_residuals:
+        review_flags.append("latin_residual_candidates")
+    review_flags.extend(
+        field for field in review_order_fields if differences[field]
+    )
+    status = "fail" if hard_failures else "review" if review_flags else "pass"
+    result = {
+        "status": status,
+        "pilot": args.pilot,
+        "source_file": relative,
+        "expected_targets": args.expected_targets,
+        "source_comments": len(sources),
+        "active_targets": len(targets),
+        "pairing": pairing,
+        "source_comment_integrity": {
+            "unmatched": len(unmatched_sources),
+            "locations": bounded_locations(unmatched_sources, args.top),
+        },
+        "empty_targets": {
+            "count": len(empty_targets),
+            "locations": bounded_locations(empty_targets, args.top),
+        },
+        "unchanged_targets": {
+            "count": len(unchanged_targets),
+            "locations": bounded_locations(unchanged_targets, args.top),
+        },
+        "latin_residual_candidates": {
+            "count": len(latin_residuals),
+            "locations": latin_residuals[: args.top],
+        },
+        "targets_without_han": {
+            "count": len(targets_without_han),
+            "locations": bounded_locations(targets_without_han, args.top),
+        },
+        "unsupported_statements": {
+            "count": len(outside_or_unsupported),
+            "locations": bounded_locations(outside_or_unsupported, args.top),
+        },
+        "file_format": {
+            "encoding": source_entry["encoding"],
+            "newline": pilot_metadata["newline"],
+            "byte_order_mark": pilot_metadata["bom"],
+            "matches_source": format_matches_source,
+        },
+        "source_index_current": source_index_current,
+        "translate_headers_match": source_headers_match,
+        "hard_failures": list(dict.fromkeys(hard_failures)),
+        "review_flags": list(dict.fromkeys(review_flags)),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if hard_failures or (args.strict and review_flags):
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build and query a bounded-output Ren'Py text index."
@@ -1123,6 +1393,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace an existing non-source output file.",
     )
     pilot.set_defaults(func=extract_pilot)
+
+    check = subparsers.add_parser(
+        "check",
+        help="Validate a translated calibration pilot without printing text.",
+    )
+    check.add_argument("pilot", help="Translated calibration .rpy file.")
+    check.add_argument("--index", required=True, help="Source index JSON path.")
+    check.add_argument(
+        "--source-file",
+        required=True,
+        help="Indexed project-relative source .rpy file.",
+    )
+    check.add_argument(
+        "--expected-targets",
+        type=int,
+        required=True,
+        help="Expected source/target statement count.",
+    )
+    check.add_argument(
+        "--allowed-latin",
+        action="append",
+        default=[],
+        metavar="WORD",
+        help="Ignore one exact Latin word in residual review; repeat as needed.",
+    )
+    check.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Maximum locations to return per issue type.",
+    )
+    check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return failure for review candidates as well as hard failures.",
+    )
+    check.set_defaults(func=check_translation)
     return parser
 
 
@@ -1135,6 +1442,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise IndexErrorMessage("--context must be between 0 and 10")
     if hasattr(args, "start_line") and args.start_line < 1:
         raise IndexErrorMessage("--start-line must be at least 1")
+    if hasattr(args, "expected_targets") and args.expected_targets < 1:
+        raise IndexErrorMessage("--expected-targets must be at least 1")
     if hasattr(args, "max_chars") and not 40 <= args.max_chars <= 2000:
         raise IndexErrorMessage("--max-chars must be between 40 and 2000")
 

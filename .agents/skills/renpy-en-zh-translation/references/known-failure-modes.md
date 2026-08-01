@@ -5,8 +5,10 @@
 | Remove a speaker | Dialogue becomes narration | Statement-role comparison | Block completion |
 | Add a speaker | Narration becomes dialogue | Statement-role comparison | Block completion |
 | Change a block identifier | Translation lookup fails | Identifier comparison | Block completion |
+| Change statement indentation | A statement leaves or changes its block | Source/target indentation comparison | Block completion |
 | Lose, duplicate, or normalize a tag | Display or runtime defect | Source-relative token sequence | Block completion |
 | Alter interpolation | Runtime error or wrong value | Exact token comparison | Block completion |
+| Alter a percent-format token | Runtime error or wrong substituted value | Exact percent-format token comparison | Block completion |
 | Reorder a control tag | Timing or flow changes | Ordered token comparison | Review or block |
 | Pair quotation marks inside every `extend` fragment | A cross-statement speech channel is split or changed | Source-relative visible-quote edge comparison | Restore opening and closing marks to their corresponding fragments |
 | Skip a short string | Visible untranslated text | Residual-English review | Translate or report |

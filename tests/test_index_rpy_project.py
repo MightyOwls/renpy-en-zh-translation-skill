@@ -53,6 +53,27 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         return completed
 
+    def make_fixture_pilot(self, limit: int = 4) -> Path:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        output = self.temp_dir / "check-pilot.rpy"
+        self.run_cli(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--limit",
+            str(limit),
+            "--output",
+            str(output),
+        )
+        return output
+
     def test_scan_outputs_only_compact_metadata(self) -> None:
         result, raw = self.run_cli(
             "scan",
@@ -381,6 +402,200 @@ class IndexRpyProjectTests(unittest.TestCase):
             "--overwrite",
         )
         self.assertIn("cannot overwrite an indexed source", indexed.stderr)
+
+    def test_check_passes_a_translated_pilot_without_printing_text(self) -> None:
+        pilot = self.make_fixture_pilot()
+        lines = pilot.read_text(encoding="utf-8").splitlines()
+        source_positions = [
+            index for index, line in enumerate(lines) if line.startswith("    # ")
+        ]
+        translated_targets = [
+            '    duke "你迟到了，[player_name]。"',
+            '    drifter "路上太堵了。"',
+            '    "大厅里安静下来。"',
+            '    duke 2 stern "{font=fonts/mask.ttf}遮蔽"',
+        ]
+        for source_position, target in zip(
+            source_positions, translated_targets, strict=True
+        ):
+            lines[source_position + 1] = target
+        pilot.write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        result, raw = self.run_cli(
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "4",
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["hard_failures"], [])
+        self.assertEqual(result["review_flags"], [])
+        self.assertTrue(result["source_index_current"])
+        self.assertTrue(result["translate_headers_match"])
+        self.assertEqual(result["source_comment_integrity"]["unmatched"], 0)
+        self.assertEqual(result["latin_residual_candidates"]["count"], 0)
+        self.assertEqual(result["targets_without_han"]["count"], 0)
+        self.assertNotIn("You are late", raw)
+        self.assertNotIn("你迟到了", raw)
+
+    def test_check_reports_review_and_strict_mode_fails(self) -> None:
+        pilot = self.make_fixture_pilot()
+        common_args = (
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "4",
+        )
+
+        result, raw = self.run_cli(*common_args)
+        strict = self.run_cli_failure(*common_args, "--strict")
+        strict_result = json.loads(strict.stdout)
+
+        self.assertEqual(result["status"], "review")
+        self.assertEqual(result["unchanged_targets"]["count"], 4)
+        self.assertEqual(result["latin_residual_candidates"]["count"], 3)
+        self.assertIn("unchanged_targets", result["review_flags"])
+        self.assertIn("latin_residual_candidates", result["review_flags"])
+        self.assertEqual(strict_result["status"], "review")
+        self.assertNotIn("You are late", raw)
+
+    def test_check_fails_on_source_empty_speaker_and_indentation_changes(self) -> None:
+        pilot = self.make_fixture_pilot()
+        lines = pilot.read_text(encoding="utf-8").splitlines()
+        source_positions = [
+            index for index, line in enumerate(lines) if line.startswith("    # ")
+        ]
+        lines[source_positions[0]] = '    # duke "Changed source."'
+        lines[source_positions[0] + 1] = '    duke ""'
+        lines[source_positions[1] + 1] = '    duke "已经翻译。"'
+        lines[source_positions[2] + 1] = '        "大厅里安静下来。"'
+        lines[source_positions[3] + 1] = (
+            '    duke 2 stern "{font=fonts/mask.ttf}遮蔽"'
+        )
+        pilot.write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        completed = self.run_cli_failure(
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "4",
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("source_comment_integrity", result["hard_failures"])
+        self.assertIn("empty_targets", result["hard_failures"])
+        self.assertIn("speaker", result["hard_failures"])
+        self.assertIn("indentation", result["hard_failures"])
+        self.assertNotIn("Changed source", completed.stdout)
+
+    def test_check_fails_on_format_drift(self) -> None:
+        pilot = self.make_fixture_pilot(limit=1)
+        raw = pilot.read_bytes().replace(b"\r\n", b"\n")
+        pilot.write_bytes(raw.replace(b"\n", b"\r\n"))
+
+        completed = self.run_cli_failure(
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "1",
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("file_format", result["hard_failures"])
+        self.assertFalse(result["file_format"]["matches_source"])
+
+    def test_check_detects_percent_format_token_loss(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "\ntranslate schinese percent_formats_deadbeef:\n\n"
+                '    # duke "Value: %s / %(name)s / %%"\n'
+                '    duke "Old target"\n'
+            )
+        source_line = next(
+            index
+            for index, line in enumerate(
+                localization.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            )
+            if line == '    # duke "Value: %s / %(name)s / %%"'
+        )
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        pilot = self.temp_dir / "percent-pilot.rpy"
+        self.run_cli(
+            "pilot",
+            "--index",
+            str(self.index),
+            "--file",
+            "game/tl/schinese/story.rpy",
+            "--start-line",
+            str(source_line),
+            "--limit",
+            "1",
+            "--output",
+            str(pilot),
+        )
+        lines = pilot.read_text(encoding="utf-8").splitlines()
+        target_line = next(
+            index + 1
+            for index, line in enumerate(lines)
+            if line == '    # duke "Value: %s / %(name)s / %%"'
+        )
+        lines[target_line] = '    duke "数值：%(name)s。"'
+        pilot.write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        completed = self.run_cli_failure(
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "1",
+        )
+        result = json.loads(completed.stdout)
+
+        differences = result["pairing"]["structural_differences"]
+        self.assertEqual(differences["percent_format_tokens"], 1)
+        self.assertIn("percent_format_tokens", result["hard_failures"])
+        self.assertNotIn("Value", completed.stdout)
 
     def test_records_dialogue_attributes_and_source_relative_tags(self) -> None:
         self.run_cli(

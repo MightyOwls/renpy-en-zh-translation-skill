@@ -74,6 +74,7 @@ python scripts/index_rpy_project.py summary --index <index.json>
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 0
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
 python scripts/index_rpy_project.py pilot --index <index.json> --file "routes/<route>.rpy" --start-line <line> --limit 40 --output .renpy-translation/pilot/<scene>.rpy
+python scripts/index_rpy_project.py check .renpy-translation/pilot/<scene>.rpy --index <index.json> --source-file "routes/<route>.rpy" --expected-targets 40
 ```
 
 Prefer one source-evidence corpus. Scan original scripts while excluding
@@ -103,6 +104,14 @@ it never copies existing targets. Keep the output under an ignored local
 directory because it contains source text. The command refuses stale indexes,
 mixed-newline sources, indexed source-file outputs, and existing outputs unless
 `--overwrite` is explicit.
+
+After translating the pilot, run `check` against the same project index and
+source file. Treat `status=fail` as a technical blocker. Treat `status=review`
+as a bounded manual queue for unchanged targets, likely Latin residuals, or
+token-order changes; use `--strict` when those review items must also fail an
+automated gate. Lines without Han characters are informational and require
+contextual review rather than automatic failure. Use repeated `--allowed-latin`
+only for exact project-approved words.
 
 Treat an initial budget near 100,000 total profiling tokens and a hard review
 point near 150,000 as guidance for a million-word project, not as a guarantee.
@@ -181,6 +190,8 @@ Before completion:
    strings.
 4. Check terminology, address terms, voice consistency, and scene continuity.
 5. Run available deterministic checks and Ren'Py lint when supported.
+   For a generated calibration pilot, run `scripts/index_rpy_project.py check`
+   with the original local index, source file, and expected target count.
 6. Re-open every reported ambiguity at the cited file and line. Never invent a
    source quotation.
 
