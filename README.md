@@ -77,6 +77,8 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py sampl
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py pilot --index .renpy-translation/project-index.json --file "routes/ROUTE_NAME.rpy" --start-line 100 --limit 40 --output .renpy-translation/pilot/scene.rpy
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check .renpy-translation/pilot/scene.rpy --index .renpy-translation/project-index.json --source-file "routes/ROUTE_NAME.rpy" --expected-targets 40
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check "routes/ROUTE_NAME.rpy" --index .renpy-translation/project-index.json --source-file "routes/ROUTE_NAME.rpy"
 ```
 
 `--file` 接受项目相对的 POSIX 风格 glob，可重复指定；它适合把同一 speaker
@@ -101,6 +103,13 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check
 `status=fail` 表示技术阻断；`status=review` 表示仍有未改英文、拉丁词残留候选或
 标记顺序变化等待人工确认。默认情况下复核项不会返回失败码；自动化流程可加
 `--strict`。没有汉字的标点、符号或专名行只作为信息报告。
+
+检查实际批次文件时，应先建立索引，再直接编辑该文件的活动中文目标。`check`
+会从索引推导完整文件的预期数量，同时检查注释配对和 `old`/`new`。中文目标变化
+会改变整文件哈希，这是正常信息；只有英文源证据发生变化才会被视为索引失效。
+源证据包括 translation 语言与头部、block、statement 类型、speaker、属性、
+缩进和原文。若检查的是独立或部分文件，仍须显式提供 `--expected-targets`，防止
+整对语句被遗漏。
 
 如果扫描原始脚本，应排除生成的本地化树，避免重复统计：
 

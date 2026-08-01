@@ -439,9 +439,9 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["hard_failures"], [])
         self.assertEqual(result["review_flags"], [])
-        self.assertTrue(result["source_index_current"])
-        self.assertTrue(result["translate_headers_match"])
-        self.assertEqual(result["source_comment_integrity"]["unmatched"], 0)
+        self.assertTrue(result["source_evidence_matches_index"])
+        self.assertTrue(result["indexed_file_sha256_matches"])
+        self.assertEqual(result["source_evidence_integrity"]["unmatched"], 0)
         self.assertEqual(result["latin_residual_candidates"]["count"], 0)
         self.assertEqual(result["targets_without_han"]["count"], 0)
         self.assertNotIn("You are late", raw)
@@ -471,6 +471,17 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertIn("latin_residual_candidates", result["review_flags"])
         self.assertEqual(strict_result["status"], "review")
         self.assertNotIn("You are late", raw)
+
+        missing_expected = self.run_cli_failure(
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+        )
+        self.assertEqual(missing_expected.returncode, 2)
+        self.assertIn("--expected-targets is required", missing_expected.stderr)
 
     def test_check_fails_on_source_empty_speaker_and_indentation_changes(self) -> None:
         pilot = self.make_fixture_pilot()
@@ -504,7 +515,7 @@ class IndexRpyProjectTests(unittest.TestCase):
         result = json.loads(completed.stdout)
 
         self.assertEqual(result["status"], "fail")
-        self.assertIn("source_comment_integrity", result["hard_failures"])
+        self.assertIn("source_evidence_integrity", result["hard_failures"])
         self.assertIn("empty_targets", result["hard_failures"])
         self.assertIn("speaker", result["hard_failures"])
         self.assertIn("indentation", result["hard_failures"])
@@ -592,10 +603,104 @@ class IndexRpyProjectTests(unittest.TestCase):
         )
         result = json.loads(completed.stdout)
 
-        differences = result["pairing"]["structural_differences"]
+        differences = result["structural_differences"]
         self.assertEqual(differences["percent_format_tokens"], 1)
         self.assertIn("percent_format_tokens", result["hard_failures"])
         self.assertNotIn("Value", completed.stdout)
+
+    def test_check_accepts_target_edits_in_the_indexed_batch_file(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        data = json.loads(self.index.read_text(encoding="utf-8"))
+        relative = "game/tl/schinese/story.rpy"
+        localization = self.project / Path(relative)
+        target_records = [
+            record
+            for record in data["files"][relative]["records"]
+            if record.get("block") is not None
+            and not record.get("source_comment")
+            and record["kind"] not in {"character_definition", "old"}
+        ]
+        replacements = [
+            '    duke "你迟到了，[player_name]。"',
+            '    drifter "路上太堵了。"',
+            '    "大厅里安静下来。"',
+            '    duke 2 stern "{font=fonts/mask.ttf}遮蔽"',
+            '    new "保存"',
+            '    new "读取"',
+        ]
+        lines = localization.read_text(encoding="utf-8").splitlines()
+        for record, replacement in zip(target_records, replacements, strict=True):
+            lines[record["line"] - 1] = replacement
+        localization.write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        result, raw = self.run_cli(
+            "check",
+            str(localization),
+            "--index",
+            str(self.index),
+            "--source-file",
+            relative,
+            "--strict",
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["expected_targets"], 6)
+        self.assertEqual(result["source_comments"], 4)
+        self.assertEqual(result["old_strings"], 2)
+        self.assertEqual(result["active_targets"], 6)
+        self.assertTrue(result["source_evidence_matches_index"])
+        self.assertFalse(result["indexed_file_sha256_matches"])
+        self.assertEqual(
+            result["pairing"]["old_new"]["statement_pairs_compared"],
+            2,
+        )
+        self.assertNotIn("你迟到了", raw)
+
+    def test_check_rejects_source_header_changes_in_indexed_batch(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        relative = "game/tl/schinese/story.rpy"
+        localization = self.project / Path(relative)
+        text = localization.read_text(encoding="utf-8")
+        localization.write_text(
+            text.replace(
+                "translate schinese start_a1b2c3d4:",
+                "translate french start_a1b2c3d4:",
+                1,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        completed = self.run_cli_failure(
+            "check",
+            str(localization),
+            "--index",
+            str(self.index),
+            "--source-file",
+            relative,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["source_evidence_matches_index"])
+        self.assertFalse(result["indexed_file_sha256_matches"])
+        self.assertIn("source_index_evidence", result["hard_failures"])
+        self.assertIn("source_evidence_integrity", result["hard_failures"])
+        self.assertNotIn("You are late", completed.stdout)
 
     def test_records_dialogue_attributes_and_source_relative_tags(self) -> None:
         self.run_cli(
@@ -769,6 +874,40 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(
             result["file_formats"]["byte_order_marks"], {"none": 2}
         )
+
+    def test_refreshes_entries_missing_source_evidence_metadata(self) -> None:
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        data = json.loads(self.index.read_text(encoding="utf-8"))
+        for entry in data["files"].values():
+            entry.pop("record_format_version")
+            entry.pop("source_evidence_sha256")
+            for record in entry["records"]:
+                record.pop("language", None)
+                record.pop("translate_header", None)
+        self.index.write_text(json.dumps(data), encoding="utf-8")
+
+        result, _ = self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        refreshed = json.loads(self.index.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["changed_files"], 2)
+        self.assertEqual(result["reused_files"], 0)
+        for entry in refreshed["files"].values():
+            self.assertEqual(entry["record_format_version"], 2)
+            self.assertEqual(len(entry["source_evidence_sha256"]), 64)
+            for record in entry["records"]:
+                if record.get("block") is not None:
+                    self.assertIsNotNone(record["language"])
+                    self.assertIsNotNone(record["translate_header"])
 
     def test_reports_mixed_newlines(self) -> None:
         story = self.project / "game" / "story.rpy"

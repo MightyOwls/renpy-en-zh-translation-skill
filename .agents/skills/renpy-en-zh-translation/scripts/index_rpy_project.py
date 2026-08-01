@@ -21,9 +21,11 @@ from typing import Any, Iterable
 
 
 FORMAT_VERSION = 2
+FILE_RECORD_VERSION = 2
 STRING = r'(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)(?P=quote)'
 TRANSLATE_RE = re.compile(
-    r"^(?P<indent>\s*)translate\s+\w+\s+(?P<block>[A-Za-z0-9_]+)\s*:"
+    r"^(?P<indent>\s*)translate\s+(?P<language>\w+)\s+"
+    r"(?P<block>[A-Za-z0-9_]+)\s*:"
 )
 CHARACTER_RE = re.compile(
     r"^\s*define\s+(?P<speaker>[A-Za-z_]\w*)\s*=\s*Character\s*\((?P<args>.*)\)\s*$"
@@ -271,12 +273,16 @@ def parse_text(text: str) -> list[dict[str, Any]]:
     lines = text.splitlines()
     records: list[dict[str, Any]] = []
     current_block: str | None = None
+    current_language: str | None = None
+    current_header: str | None = None
     block_indent = -1
 
     for line_number, raw_line in enumerate(lines, start=1):
         translate_match = TRANSLATE_RE.match(raw_line)
         if translate_match:
             current_block = translate_match.group("block")
+            current_language = translate_match.group("language")
+            current_header = raw_line
             block_indent = len(translate_match.group("indent").expandtabs(4))
             continue
 
@@ -289,6 +295,8 @@ def parse_text(text: str) -> list[dict[str, Any]]:
             and indent_width <= block_indent
         ):
             current_block = None
+            current_language = None
+            current_header = None
             block_indent = -1
 
         character_match = CHARACTER_RE.match(raw_line)
@@ -327,9 +335,52 @@ def parse_text(text: str) -> list[dict[str, Any]]:
             source_comment=source_comment,
         )
         if record is not None:
+            record["language"] = current_language
+            record["translate_header"] = current_header
             records.append(record)
 
     return records
+
+
+def is_source_evidence_record(record: dict[str, Any]) -> bool:
+    return (
+        record.get("source_comment")
+        and record["kind"] not in {"old", "new"}
+    ) or (
+        not record.get("source_comment") and record["kind"] == "old"
+    )
+
+
+def source_record_fingerprint(record: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        record.get("language"),
+        record.get("translate_header"),
+        record.get("block"),
+        record.get("kind"),
+        record.get("speaker"),
+        record.get("attributes"),
+        record.get("indent"),
+        record.get("text"),
+    )
+
+
+def source_evidence_records(
+    records: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [record for record in records if is_source_evidence_record(record)]
+
+
+def source_evidence_sha256(records: Iterable[dict[str, Any]]) -> str:
+    fingerprints = [
+        source_record_fingerprint(record)
+        for record in source_evidence_records(records)
+    ]
+    serialized = json.dumps(
+        fingerprints,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 def discover_rpy_files(root: Path, exclude_patterns: list[str]) -> list[Path]:
@@ -438,15 +489,20 @@ def scan_project(args: argparse.Namespace) -> int:
             old_entry
             and old_entry.get("sha256") == digest
             and old_entry.get("encoding") == args.encoding
+            and old_entry.get("record_format_version") == FILE_RECORD_VERSION
+            and old_entry.get("source_evidence_sha256")
         ):
             indexed_files[relative] = {**old_entry, **file_metadata}
             reused_files += 1
             continue
 
+        records = parse_text(text)
         indexed_files[relative] = {
             **file_metadata,
             "encoding": args.encoding,
-            "records": parse_text(text),
+            "record_format_version": FILE_RECORD_VERSION,
+            "source_evidence_sha256": source_evidence_sha256(records),
+            "records": records,
         }
         changed_files += 1
 
@@ -1014,33 +1070,34 @@ def extract_pilot(args: argparse.Namespace) -> int:
     return 0
 
 
-def calibration_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def translation_target_records(
+    records: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [
         record
         for record in records
         if record.get("block") is not None
-        and record["kind"] not in {"character_definition", "old", "new"}
+        and not record.get("source_comment")
+        and record["kind"] not in {"character_definition", "old"}
     ]
 
 
-def source_record_fingerprint(record: dict[str, Any]) -> tuple[Any, ...]:
-    return (
-        record.get("block"),
-        record.get("kind"),
-        record.get("speaker"),
-        record.get("attributes"),
-        record.get("indent"),
-        record.get("text"),
-    )
-
-
-def pair_commented_records(
-    records: Iterable[dict[str, Any]],
+def paired_records(
+    records: Iterable[dict[str, Any]], source_kind: str
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    for record in calibration_records(records):
-        block = record["block"]
-        side = "source" if record["source_comment"] else "target"
+    for record in records:
+        block = record.get("block")
+        if block is None:
+            continue
+        if source_kind == "comments":
+            if record["kind"] in {"old", "new"}:
+                continue
+            side = "source" if record["source_comment"] else "target"
+        else:
+            if record["kind"] not in {"old", "new"}:
+                continue
+            side = "source" if record["kind"] == "old" else "target"
         groups.setdefault(block, {"source": [], "target": []})[side].append(
             record
         )
@@ -1049,15 +1106,6 @@ def pair_commented_records(
         for group in groups.values()
         for pair in zip(group["source"], group["target"])
     ]
-
-
-def translate_header_counts(text: str) -> Counter[tuple[str, str]]:
-    headers: Counter[tuple[str, str]] = Counter()
-    for line in text.splitlines():
-        match = TRANSLATE_RE.match(line)
-        if match is not None:
-            headers[(match.group("block"), line)] += 1
-    return headers
 
 
 def bounded_locations(
@@ -1072,6 +1120,10 @@ def check_translation(args: argparse.Namespace) -> int:
     source_entry = data["files"].get(relative)
     if source_entry is None:
         raise IndexErrorMessage(f"File is not present in the index: {relative}")
+    if source_entry.get("record_format_version") != FILE_RECORD_VERSION:
+        raise IndexErrorMessage(
+            "Index lacks current source-evidence metadata; run scan again"
+        )
 
     pilot_path = Path(args.pilot).resolve()
     if not pilot_path.is_file():
@@ -1084,20 +1136,26 @@ def check_translation(args: argparse.Namespace) -> int:
         {"file": pilot_path.name, **record}
         for record in pilot_records
     ]
-    pairing = summarize_pairs(
-        named_pilot_records,
-        source_kind="comments",
-        top=args.top,
-    )
-    relevant_records = calibration_records(pilot_records)
-    sources = [record for record in relevant_records if record["source_comment"]]
-    targets = [record for record in relevant_records if not record["source_comment"]]
-    pairs = pair_commented_records(pilot_records)
+    pairing = {
+        "commented_source_targets": summarize_pairs(
+            named_pilot_records,
+            source_kind="comments",
+            top=args.top,
+        ),
+        "old_new": summarize_pairs(
+            named_pilot_records,
+            source_kind="old",
+            top=args.top,
+        ),
+    }
+    sources = source_evidence_records(pilot_records)
+    targets = translation_target_records(pilot_records)
+    pairs = paired_records(pilot_records, "comments")
+    pairs.extend(paired_records(pilot_records, "old"))
 
     indexed_source_counts = Counter(
         source_record_fingerprint(record)
-        for record in calibration_records(source_entry["records"])
-        if record["source_comment"]
+        for record in source_evidence_records(source_entry["records"])
     )
     unmatched_sources = []
     for record in sources:
@@ -1109,19 +1167,33 @@ def check_translation(args: argparse.Namespace) -> int:
 
     project_root = Path(data["project_root"])
     indexed_source_path = (project_root / relative).resolve()
-    source_index_current = False
-    source_text = None
-    if indexed_source_path.is_file():
-        current_metadata, source_text = inspect_file(
-            indexed_source_path, source_entry["encoding"]
-        )
-        source_index_current = current_metadata["sha256"] == source_entry["sha256"]
+    same_as_indexed_file = pilot_path == indexed_source_path
+    expected_targets = args.expected_targets
+    if expected_targets is None:
+        if not same_as_indexed_file:
+            raise IndexErrorMessage(
+                "--expected-targets is required for a partial or separate file"
+            )
+        expected_targets = len(source_evidence_records(source_entry["records"]))
 
-    source_headers_match = None
-    if source_index_current and source_text is not None:
-        source_headers = translate_header_counts(source_text)
-        pilot_headers = translate_header_counts(pilot_text)
-        source_headers_match = not bool(pilot_headers - source_headers)
+    source_evidence_matches_index = False
+    indexed_file_sha256_matches = False
+    if indexed_source_path.is_file():
+        if same_as_indexed_file:
+            current_metadata = pilot_metadata
+            current_records = pilot_records
+        else:
+            current_metadata, current_text = inspect_file(
+                indexed_source_path, source_entry["encoding"]
+            )
+            current_records = parse_text(current_text)
+        indexed_file_sha256_matches = (
+            current_metadata["sha256"] == source_entry["sha256"]
+        )
+        source_evidence_matches_index = (
+            source_evidence_sha256(current_records)
+            == source_entry["source_evidence_sha256"]
+        )
 
     expected_format_available = all(
         key in source_entry for key in ("newline", "bom")
@@ -1161,16 +1233,15 @@ def check_translation(args: argparse.Namespace) -> int:
         if not HAN_RE.search(text):
             targets_without_han.append(record)
 
-    outside_or_unsupported = [
+    outside_statements = [
         record
         for record in pilot_records
         if record["kind"] != "character_definition"
-        and (
-            record.get("block") is None
-            or record["kind"] in {"old", "new"}
-        )
+        and record.get("block") is None
     ]
-    differences = pairing["structural_differences"]
+    differences = Counter()
+    for source, target in pairs:
+        differences.update(compare_record_pair(source, target))
     review_order_fields = (
         "tag_order",
         "interpolation_order",
@@ -1183,28 +1254,27 @@ def check_translation(args: argparse.Namespace) -> int:
     )
 
     hard_failures = []
-    if len(sources) != args.expected_targets:
-        hard_failures.append("source_comment_count")
-    if len(targets) != args.expected_targets:
+    if len(sources) != expected_targets:
+        hard_failures.append("source_evidence_count")
+    if len(targets) != expected_targets:
         hard_failures.append("active_target_count")
-    if (
-        pairing["count_mismatch_blocks"]
-        or pairing["source_only_blocks"]
-        or pairing["target_only_blocks"]
+    if any(
+        summary["count_mismatch_blocks"]
+        or summary["source_only_blocks"]
+        or summary["target_only_blocks"]
+        for summary in pairing.values()
     ):
         hard_failures.append("pairing_coverage")
     if unmatched_sources:
-        hard_failures.append("source_comment_integrity")
-    if not source_index_current:
-        hard_failures.append("stale_source_index")
-    if source_headers_match is False:
-        hard_failures.append("translate_headers")
+        hard_failures.append("source_evidence_integrity")
+    if not source_evidence_matches_index:
+        hard_failures.append("source_index_evidence")
     if format_matches_source is False:
         hard_failures.append("file_format")
     if empty_targets:
         hard_failures.append("empty_targets")
-    if outside_or_unsupported:
-        hard_failures.append("unsupported_statements")
+    if outside_statements:
+        hard_failures.append("outside_translate_statements")
     hard_failures.extend(
         field for field in hard_structural_fields if differences[field]
     )
@@ -1220,13 +1290,20 @@ def check_translation(args: argparse.Namespace) -> int:
     status = "fail" if hard_failures else "review" if review_flags else "pass"
     result = {
         "status": status,
-        "pilot": args.pilot,
+        "file": args.pilot,
         "source_file": relative,
-        "expected_targets": args.expected_targets,
-        "source_comments": len(sources),
+        "expected_targets": expected_targets,
+        "source_evidence": len(sources),
+        "source_comments": sum(
+            bool(record.get("source_comment")) for record in sources
+        ),
+        "old_strings": sum(record["kind"] == "old" for record in sources),
         "active_targets": len(targets),
         "pairing": pairing,
-        "source_comment_integrity": {
+        "structural_differences": {
+            field: differences[field] for field in PAIR_DIFFERENCE_FIELDS
+        },
+        "source_evidence_integrity": {
             "unmatched": len(unmatched_sources),
             "locations": bounded_locations(unmatched_sources, args.top),
         },
@@ -1246,9 +1323,9 @@ def check_translation(args: argparse.Namespace) -> int:
             "count": len(targets_without_han),
             "locations": bounded_locations(targets_without_han, args.top),
         },
-        "unsupported_statements": {
-            "count": len(outside_or_unsupported),
-            "locations": bounded_locations(outside_or_unsupported, args.top),
+        "outside_translate_statements": {
+            "count": len(outside_statements),
+            "locations": bounded_locations(outside_statements, args.top),
         },
         "file_format": {
             "encoding": source_entry["encoding"],
@@ -1256,8 +1333,8 @@ def check_translation(args: argparse.Namespace) -> int:
             "byte_order_mark": pilot_metadata["bom"],
             "matches_source": format_matches_source,
         },
-        "source_index_current": source_index_current,
-        "translate_headers_match": source_headers_match,
+        "source_evidence_matches_index": source_evidence_matches_index,
+        "indexed_file_sha256_matches": indexed_file_sha256_matches,
         "hard_failures": list(dict.fromkeys(hard_failures)),
         "review_flags": list(dict.fromkeys(review_flags)),
     }
@@ -1396,9 +1473,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = subparsers.add_parser(
         "check",
-        help="Validate a translated calibration pilot without printing text.",
+        help="Validate a translated pilot or indexed batch without text output.",
     )
-    check.add_argument("pilot", help="Translated calibration .rpy file.")
+    check.add_argument("pilot", help="Translated pilot or batch .rpy file.")
     check.add_argument("--index", required=True, help="Source index JSON path.")
     check.add_argument(
         "--source-file",
@@ -1408,8 +1485,10 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--expected-targets",
         type=int,
-        required=True,
-        help="Expected source/target statement count.",
+        help=(
+            "Expected source/target count; required for partial or separate "
+            "files and inferred for the indexed source file."
+        ),
     )
     check.add_argument(
         "--allowed-latin",
@@ -1442,7 +1521,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise IndexErrorMessage("--context must be between 0 and 10")
     if hasattr(args, "start_line") and args.start_line < 1:
         raise IndexErrorMessage("--start-line must be at least 1")
-    if hasattr(args, "expected_targets") and args.expected_targets < 1:
+    if (
+        hasattr(args, "expected_targets")
+        and args.expected_targets is not None
+        and args.expected_targets < 1
+    ):
         raise IndexErrorMessage("--expected-targets must be at least 1")
     if hasattr(args, "max_chars") and not 40 <= args.max_chars <= 2000:
         raise IndexErrorMessage("--max-chars must be between 40 and 2000")

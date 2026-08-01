@@ -21,5 +21,6 @@
 | Apply a regional dialect by stereotype | Adds unsupported setting | Voice-profile review | Use neutral register cues |
 | Load a whole large corpus into context | Excessive token use | Workflow audit | Index locally and sample |
 | Reprofile every game update | Repeated cost and drift | Index/profile version review | Analyze deltas only |
+| Treat every whole-file hash change as a stale index | Valid target edits cannot be checked | Immutable source-evidence signature | Block only when source evidence changes |
 | Invent source text in a report | Invalid QA evidence | Re-open cited line | Remove unsupported claim |
 | Repair unrelated code | Scope and regression risk | Final diff review | Revert unrelated change |

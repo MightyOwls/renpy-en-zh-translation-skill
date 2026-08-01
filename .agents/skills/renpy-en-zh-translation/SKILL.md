@@ -75,6 +75,7 @@ python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> 
 python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
 python scripts/index_rpy_project.py pilot --index <index.json> --file "routes/<route>.rpy" --start-line <line> --limit 40 --output .renpy-translation/pilot/<scene>.rpy
 python scripts/index_rpy_project.py check .renpy-translation/pilot/<scene>.rpy --index <index.json> --source-file "routes/<route>.rpy" --expected-targets 40
+python scripts/index_rpy_project.py check "routes/<route>.rpy" --index <index.json> --source-file "routes/<route>.rpy"
 ```
 
 Prefer one source-evidence corpus. Scan original scripts while excluding
@@ -112,6 +113,15 @@ token-order changes; use `--strict` when those review items must also fail an
 automated gate. Lines without Han characters are informational and require
 contextual review rather than automatic failure. Use repeated `--allowed-latin`
 only for exact project-approved words.
+
+To validate a complete indexed batch file, build the index before editing and
+run `check` on that same file after translation. The command infers the expected
+count and validates both commented-source/active-target pairs and `old`/`new`
+pairs. A changed whole-file hash is informational because target edits are
+expected; changed source evidence remains a hard failure. Source evidence
+includes the translation language and header, block, statement role, speaker,
+attributes, indentation, and source text. Keep `--expected-targets` explicit
+for a separate or partial file because the index cannot infer omitted pairs.
 
 Treat an initial budget near 100,000 total profiling tokens and a hard review
 point near 150,000 as guidance for a million-word project, not as a guarantee.
@@ -191,7 +201,8 @@ Before completion:
 4. Check terminology, address terms, voice consistency, and scene continuity.
 5. Run available deterministic checks and Ren'Py lint when supported.
    For a generated calibration pilot, run `scripts/index_rpy_project.py check`
-   with the original local index, source file, and expected target count.
+   with the original local index and source file. Supply the expected target
+   count for a separate or partial calibration file.
 6. Re-open every reported ambiguity at the cited file and line. Never invent a
    source quotation.
 
