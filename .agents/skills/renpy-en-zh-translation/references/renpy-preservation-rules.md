@@ -17,7 +17,7 @@ natural-language payload of player-visible statements.
 
 ## Preserve inline tokens
 
-Preserve the spelling, count, parameters, and valid nesting of:
+Preserve the spelling, count, parameters, and source-relative structure of:
 
 - interpolation such as `[player_name]`, `[count!q]`, and format expressions
 - percent-format expressions
@@ -32,6 +32,16 @@ timing semantics of control tags.
 
 Compare protected-token sequences as well as sets. A set comparison alone
 misses duplicates and invalid nesting.
+
+Do not assume every source tag has an explicit closing tag. Ren'Py strings can
+intentionally rely on the end of the string to end a text style. Preserve the
+source's open/close behavior exactly; report a target-only imbalance or a
+source/target token-sequence difference for review instead of normalizing it.
+
+Preserve font tags by default. A target language may need a different font or
+no inline font when the source font lacks Chinese glyphs, but that is a scoped
+project typography exception requiring evidence and approval, not an automatic
+translation rewrite. Never alter the `old` side of an `old`/`new` pair.
 
 ## Generated dialogue and narration
 
@@ -61,8 +71,15 @@ explicitly requests a technical repair.
 Read `extend` and control-tag fragments as one utterance for meaning, then
 write each translated fragment back to its original structural statement.
 
+Visible quotation marks may also span those statements. Preserve the
+source-relative opening and closing roles even when the approved target style
+changes escaped English `\"...\"` to Chinese `“……”` or another approved pair.
+An opening fragment may therefore contain only the opening mark, and an
+`extend` fragment may contain only the closing mark. Do not add a closing mark
+to every fragment or move all quotation marks onto one statement.
+
 ## Never repair silently
 
-If the source contains malformed syntax, conflicting tags, or an apparent
-code defect, report it separately. Do not mix an unrequested technical repair
-into a translation diff.
+If the source contains conflicting tags or an apparent code defect, report it
+separately. An unclosed text tag is not by itself proof of a defect. Do not mix
+an unrequested technical repair into a translation diff.
