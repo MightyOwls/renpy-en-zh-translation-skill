@@ -82,6 +82,13 @@ python scripts/index_rpy_project.py check .renpy-translation/pilot/<scene>.rpy -
 python scripts/index_rpy_project.py check "routes/<route>.rpy" --index <index.json> --source-file "routes/<route>.rpy"
 ```
 
+The scan input establishes the index-relative file names used by later
+commands. When scanning one `.rpy` file, its parent is the index root, so use
+the reported file name (usually the basename) for `--file` and
+`--source-file`. In `summary`, read commented-source pairing and `old`/`new`
+pairing as separate populations; select a pilot by indexed file, source line,
+and explicit limit instead of treating an aggregate source count as its size.
+
 Prefer one source-evidence corpus. Scan original scripts while excluding
 generated `tl/` trees, or scan only the localization tree and sample its source
 comments. Do not count original, comment, and active target copies as three

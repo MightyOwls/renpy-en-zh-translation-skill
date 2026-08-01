@@ -89,6 +89,14 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check "routes/ROUTE_NAME.rpy" --index .renpy-translation/project-index.json --source-file "routes/ROUTE_NAME.rpy"
 ```
 
+扫描路径决定索引内的相对文件名。若 `scan` 的输入是单个 `.rpy` 文件，索引根目录
+就是该文件的父目录，后续 `pilot --file` 和 `check --source-file` 应使用工具报告的
+索引相对名（通常是文件 basename），而不是扫描命令中原有的长路径。
+
+`summary` 会分别报告注释原文/活动目标配对和 `old`/`new` 配对；不要把两类源证据
+的合计当成某个校准片段的目标数。应按索引相对文件名、原文行号和显式 `--limit`
+限定 `pilot`，并在 `check` 中填写该片段实际应有的 `--expected-targets`。
+
 `--file` 接受项目相对的 POSIX 风格 glob，可重复指定；它适合把同一 speaker
 在不同路线中的样本分开，避免其他场景稀释人物声线证据。
 如果项目用包住整段文本的可见引号区分发言与其他频道，可再使用
