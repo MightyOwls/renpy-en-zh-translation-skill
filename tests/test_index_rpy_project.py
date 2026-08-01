@@ -137,6 +137,30 @@ class IndexRpyProjectTests(unittest.TestCase):
             "--context",
             "1",
         )
+        color_samples, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--color",
+            "#d8c8ff",
+            "--source",
+            "active",
+            "--limit",
+            "1",
+            "--context",
+            "0",
+        )
+        evidence_samples, evidence_raw = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--source",
+            "evidence",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
 
         self.assertIn("duke", summary["top_speakers"])
         self.assertIn("fonts/noble.ttf", summary["fonts"])
@@ -145,6 +169,65 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(samples["samples"][0]["speaker"], "duke")
         self.assertTrue(samples["samples"][0]["source_comment"])
         self.assertLessEqual(len(samples["samples"][0]["context"]), 3)
+        self.assertEqual(color_samples["returned"], 1)
+        self.assertEqual(color_samples["samples"][0]["speaker"], "god")
+        self.assertEqual(evidence_samples["matched"], 6)
+        self.assertEqual(
+            sum(
+                bool(sample["source_comment"])
+                for sample in evidence_samples["samples"]
+            ),
+            4,
+        )
+        self.assertEqual(
+            sum(
+                sample["kind"] == "old"
+                for sample in evidence_samples["samples"]
+            ),
+            2,
+        )
+        self.assertNotIn('"kind": "new"', evidence_raw)
+
+    def test_samples_bound_long_center_text(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        long_text = "A" * 200 + "SYNTHETIC_TAIL"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "\ntranslate schinese long_strings:\n\n"
+                f'    old "{long_text}"\n'
+                '    new "target"\n'
+            )
+        self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+
+        result, raw = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--source",
+            "evidence",
+            "--kind",
+            "old",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+            "--max-chars",
+            "40",
+        )
+
+        sample = next(
+            item for item in result["samples"] if item["text_length"] > 40
+        )
+        self.assertEqual(len(sample["text"]), 40)
+        self.assertTrue(sample["text"].endswith("…"))
+        self.assertTrue(sample["text_truncated"])
+        self.assertEqual(sample["text_length"], len(long_text))
+        self.assertNotIn("SYNTHETIC_TAIL", raw)
 
     def test_profile_draft_is_evidence_only_and_requires_review(self) -> None:
         self.run_cli(
@@ -425,6 +508,10 @@ class IndexRpyProjectTests(unittest.TestCase):
                 '    duke "\\\"Target spoken.\\\""\n'
                 '    # duke "An internal observation."\n'
                 '    duke "Target thought."\n'
+                '    # duke "\\\"Interrupted.\\\"{w=0.5}{nw}"\n'
+                '    duke "\\\"Target.\\\"{w=0.5}{nw}"\n'
+                '    # duke "\\\"Cut off{w=0.5}{nw}"\n'
+                '    duke "\\\"Target cut off{w=0.5}{nw}"\n'
             )
         self.run_cli(
             "scan",
@@ -463,10 +550,30 @@ class IndexRpyProjectTests(unittest.TestCase):
             "--context",
             "0",
         )
+        partial, _ = self.run_cli(
+            "samples",
+            "--index",
+            str(self.index),
+            "--speaker",
+            "duke",
+            "--source",
+            "comments",
+            "--outer-quotes",
+            "partial",
+            "--limit",
+            "100",
+            "--context",
+            "0",
+        )
 
-        self.assertEqual(present["matched"], 1)
+        self.assertEqual(present["matched"], 2)
         self.assertEqual(absent["matched"], 3)
-        self.assertEqual(present["samples"][0]["text"], '\\"Spoken aloud.\\"')
+        self.assertEqual(partial["matched"], 1)
+        self.assertEqual(partial["samples"][0]["text"], '\\"Cut off{w=0.5}{nw}')
+        self.assertEqual(
+            {sample["text"] for sample in present["samples"]},
+            {'\\"Spoken aloud.\\"', '\\"Interrupted.\\"{w=0.5}{nw}'},
+        )
         self.assertTrue(
             all(
                 sample["text"] != '\\"Spoken aloud.\\"'

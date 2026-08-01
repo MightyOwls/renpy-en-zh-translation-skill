@@ -70,9 +70,13 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py scan 
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py summary --index .renpy-translation/project-index.json
 
-python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source comments --limit 12 --context 0
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --source evidence --limit 12 --context 0
 
-python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --file "routes/ROUTE_NAME*.rpy" --source comments --limit 12 --context 0
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --speaker SPEAKER_ID --file "routes/ROUTE_NAME*.rpy" --source evidence --limit 12 --context 0
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --font FONT_MARKER --source evidence --limit 5 --context 0
+
+python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py samples --index .renpy-translation/project-index.json --color COLOR_MARKER --source evidence --limit 5 --context 0
 
 python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py profile-draft --index .renpy-translation/project-index.json --output .renpy-translation/project-profile.json --speaker SPEAKER_ID
 
@@ -88,14 +92,20 @@ python .agents/skills/renpy-en-zh-translation/scripts/index_rpy_project.py check
 `--file` 接受项目相对的 POSIX 风格 glob，可重复指定；它适合把同一 speaker
 在不同路线中的样本分开，避免其他场景稀释人物声线证据。
 如果项目用包住整段文本的可见引号区分发言与其他频道，可再使用
-`--outer-quotes present` 或 `--outer-quotes absent` 分组。该选项只识别句法形式，
-仍须结合场景确认它表示对白、心理活动还是其他功能。
+`--outer-quotes present`、`absent` 或 `partial` 分组。`partial` 表示只有一侧
+可见引号，常见于被打断或跨 statement 延续的发言；`absent` 表示两侧都没有，
+并忽略字符串边缘的文本标签。这些选项只识别句法形式，仍须结合场景确认它表示
+对白、心理活动还是其他功能。
 同理，`kind=narration` 只表示扫描器未发现 speaker 标识，其中仍可能混有旁白、
 内心活动、匿名发言或项目自定义频道。
 
-若现有译文未获准作为风格证据，应从 `--context 0` 开始。上下文是原文件中的
-原始邻行，即使中心样本使用 `--source comments`，邻行仍可能包含活动译文或代码；
-只有在这些内容可被纳入证据时才提高上下文行数。
+若现有译文未获准作为风格证据，应使用 `--source evidence --context 0`。该模式
+优先选择注释原文与 `old`，若工程没有本地化源证据则选择原始脚本的活动语句。
+上下文仍是原文件中的原始邻行，可能包含活动译文或代码；只有在这些内容可被
+纳入证据时才提高上下文行数。
+
+`--max-chars` 会同时限制样本正文与每一行上下文。若正文被截断，结果会保留原始
+`text_length` 并标记 `text_truncated=true`；只有确实需要细读某一条时才提高上限。
 
 `profile-draft` 会生成本地 JSON 档案草案，包含 speaker、字体、颜色、数量和有限
 文件/行号，不包含台词。可重复使用 `--speaker` 指定优先角色；若省略，工具选择

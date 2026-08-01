@@ -70,6 +70,8 @@ HAN_RE = re.compile(r"[\u3400-\u9fff]")
 QUOTED_RE = re.compile(r'(["\'])(.*?)(?<!\\)\1')
 VISIBLE_OPENING_QUOTES = ('\\"', "“", "「", "『")
 VISIBLE_CLOSING_QUOTES = ('\\"', "”", "」", "』")
+LEADING_TAGS_RE = re.compile(r"^(?:\{[^{}\r\n]+\})*")
+TRAILING_TAGS_RE = re.compile(r"(?:\{[^{}\r\n]+\})*$")
 PAIR_DIFFERENCE_FIELDS = (
     "statement_role",
     "speaker",
@@ -1351,8 +1353,14 @@ def context_for_record(
     ]
 
 
+def escaped_outer_quote_edges(text: str) -> tuple[bool, bool]:
+    without_leading_tags = LEADING_TAGS_RE.sub("", text, count=1)
+    core = TRAILING_TAGS_RE.sub("", without_leading_tags, count=1)
+    return core.startswith('\\"'), core.endswith('\\"')
+
+
 def has_escaped_outer_quotes(text: str) -> bool:
-    return len(text) >= 4 and text.startswith('\\"') and text.endswith('\\"')
+    return escaped_outer_quote_edges(text) == (True, True)
 
 
 def sample_index(args: argparse.Namespace) -> int:
@@ -1362,6 +1370,16 @@ def sample_index(args: argparse.Namespace) -> int:
         for record in iter_records(data)
         if record["kind"] != "character_definition"
     ]
+    if args.source == "comments":
+        candidates = [
+            record for record in candidates if record["source_comment"]
+        ]
+    elif args.source == "active":
+        candidates = [
+            record for record in candidates if not record["source_comment"]
+        ]
+    elif args.source == "evidence":
+        candidates, _, _ = select_profile_evidence(candidates)
 
     if args.speaker is not None:
         candidates = [
@@ -1370,6 +1388,12 @@ def sample_index(args: argparse.Namespace) -> int:
     if args.font is not None:
         candidates = [
             record for record in candidates if args.font in record.get("fonts", [])
+        ]
+    if args.color is not None:
+        candidates = [
+            record
+            for record in candidates
+            if args.color in record.get("colors", [])
         ]
     if args.kind is not None:
         candidates = [
@@ -1385,26 +1409,23 @@ def sample_index(args: argparse.Namespace) -> int:
             )
         ]
     if args.outer_quotes is not None:
-        expected = args.outer_quotes == "present"
-        candidates = [
-            record
-            for record in candidates
-            if has_escaped_outer_quotes(record["text"]) == expected
-        ]
-    if args.source == "comments":
-        candidates = [
-            record for record in candidates if record["source_comment"]
-        ]
-    elif args.source == "active":
-        candidates = [
-            record for record in candidates if not record["source_comment"]
-        ]
+        def matches_outer_quote_mode(record: dict[str, Any]) -> bool:
+            edges = escaped_outer_quote_edges(record["text"])
+            if args.outer_quotes == "present":
+                return edges == (True, True)
+            if args.outer_quotes == "partial":
+                return edges in {(True, False), (False, True)}
+            return edges == (False, False)
 
+        candidates = [record for record in candidates if matches_outer_quote_mode(record)]
     candidates.sort(key=lambda item: (item["file"], item["line"]))
     selected = evenly_spaced(candidates, args.limit)
     output = []
     for record in selected:
         item = dict(record)
+        item["text_length"] = len(record["text"])
+        item["text_truncated"] = item["text_length"] > args.max_chars
+        item["text"] = truncate_line(record["text"], args.max_chars)
         item["context"] = context_for_record(
             data, record, args.context, args.max_chars
         )
@@ -1874,6 +1895,7 @@ def build_parser() -> argparse.ArgumentParser:
     samples.add_argument("--index", required=True, help="Index JSON path.")
     samples.add_argument("--speaker", help="Exact speaker identifier.")
     samples.add_argument("--font", help="Exact font tag value.")
+    samples.add_argument("--color", help="Exact color tag value.")
     samples.add_argument(
         "--file",
         action="append",
@@ -1890,17 +1912,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     samples.add_argument(
         "--outer-quotes",
-        choices=("present", "absent"),
+        choices=("present", "absent", "partial"),
         help=(
-            "Filter text by escaped visible quotes wrapping the whole value; "
-            "this is a syntactic signal, not an automatic voice label."
+            "Filter text by complete, missing, or one-sided escaped visible "
+            "quote edges; this is a syntactic signal, not a voice label."
         ),
     )
     samples.add_argument(
         "--source",
-        choices=("all", "active", "comments"),
+        choices=("all", "active", "comments", "evidence"),
         default="all",
-        help="Choose active statements, source comments, or both.",
+        help=(
+            "Choose all, active, commented, or profile-source-evidence "
+            "statements."
+        ),
     )
     samples.add_argument(
         "--limit",

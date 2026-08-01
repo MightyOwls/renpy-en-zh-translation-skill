@@ -71,8 +71,10 @@ voices, or receives continuing updates:
 python scripts/index_rpy_project.py scan <project> --index <index.json>
 python scripts/index_rpy_project.py scan <project> --index <index.json> --exclude "**/tl/**"
 python scripts/index_rpy_project.py summary --index <index.json>
-python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source comments --limit 12 --context 0
-python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source comments --limit 12 --context 0
+python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --source evidence --limit 12 --context 0
+python scripts/index_rpy_project.py samples --index <index.json> --speaker <id> --file "routes/<route>*.rpy" --source evidence --limit 12 --context 0
+python scripts/index_rpy_project.py samples --index <index.json> --font <marker> --source evidence --limit 5 --context 0
+python scripts/index_rpy_project.py samples --index <index.json> --color <marker> --source evidence --limit 5 --context 0
 python scripts/index_rpy_project.py profile-draft --index <index.json> --output .renpy-translation/project-profile.json --speaker <id> --speaker <id>
 python scripts/index_rpy_project.py profile-check .renpy-translation/project-profile.json --index <index.json>
 python scripts/index_rpy_project.py pilot --index <index.json> --file "routes/<route>.rpy" --start-line <line> --limit 40 --output .renpy-translation/pilot/<scene>.rpy
@@ -85,16 +87,26 @@ generated `tl/` trees, or scan only the localization tree and sample its source
 comments. Do not count original, comment, and active target copies as three
 independent voice samples.
 
-When an existing target translation is not approved style evidence, begin with
-`--context 0`. Context lines are raw neighboring file lines and can include
-active targets or code even when the center sample uses `--source comments`.
-Increase context only when those neighboring lines are acceptable evidence.
+When an existing target translation is not approved style evidence, use
+`--source evidence --context 0`. This selects commented source plus `old`
+strings when available, or active original statements when no localization
+source evidence exists. Context lines are raw neighboring file lines and can
+still include active targets or code. Increase context only when those
+neighboring lines are acceptable evidence.
 
-Use `--outer-quotes present` and `--outer-quotes absent` when a project uses
-escaped visible quotation marks to distinguish text channels. Treat this only
-as a syntactic split until surrounding scenes confirm what each form means.
-Likewise, `kind=narration` means only that the scanner found no speaker token;
-it may include narration, internal thought, anonymous speech, or custom modes.
+`--max-chars` bounds both each selected statement and each context line. A
+truncated statement reports its original `text_length` and
+`text_truncated=true`; raise the limit only for a specific sample that needs
+closer reading.
+
+Use `--outer-quotes present`, `absent`, and `partial` when a project uses
+escaped visible quotation marks to distinguish text channels. `partial`
+captures one-sided quote edges across interrupted or continued statements;
+`absent` requires neither edge, ignoring leading or trailing text tags. Treat
+these only as syntactic splits until surrounding scenes confirm what each form
+means. Likewise, `kind=narration` means only that the scanner found no speaker
+token; it may include narration, internal thought, anonymous speech, or custom
+modes.
 
 Treat this lightweight index as a discovery and sampling aid, not as a Ren'Py
 AST or syntax validator. Inspect multiline definitions, custom statements, and
