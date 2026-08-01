@@ -49,6 +49,18 @@ FONT_RE = re.compile(r"\{font=([^{}\r\n]+)\}")
 COLOR_RE = re.compile(r"\{color=([^{}\r\n]+)\}")
 INTERPOLATION_RE = re.compile(r"\[[^\[\]\r\n]+\]")
 QUOTED_RE = re.compile(r'(["\'])(.*?)(?<!\\)\1')
+VISIBLE_OPENING_QUOTES = ('\\"', "“", "「", "『")
+VISIBLE_CLOSING_QUOTES = ('\\"', "”", "」", "』")
+PAIR_DIFFERENCE_FIELDS = (
+    "statement_role",
+    "speaker",
+    "attributes",
+    "tag_tokens",
+    "tag_order",
+    "interpolation_tokens",
+    "interpolation_order",
+    "visible_quote_edges",
+)
 
 NON_SPEAKER_KEYWORDS = {
     "at",
@@ -452,6 +464,14 @@ def count_markers(
     )
 
 
+def visible_quote_edges(text: str) -> tuple[bool, bool]:
+    """Return source-relative opening and closing visible-quote roles."""
+    return (
+        text.startswith(VISIBLE_OPENING_QUOTES),
+        text.endswith(VISIBLE_CLOSING_QUOTES),
+    )
+
+
 def compare_record_pair(
     source: dict[str, Any], target: dict[str, Any]
 ) -> dict[str, int]:
@@ -476,17 +496,11 @@ def compare_record_pair(
         differences["interpolation_tokens"] += 1
     elif source_interpolations != target_interpolations:
         differences["interpolation_order"] += 1
+    if visible_quote_edges(source["text"]) != visible_quote_edges(target["text"]):
+        differences["visible_quote_edges"] += 1
     return {
         name: differences[name]
-        for name in (
-            "statement_role",
-            "speaker",
-            "attributes",
-            "tag_tokens",
-            "tag_order",
-            "interpolation_tokens",
-            "interpolation_order",
-        )
+        for name in PAIR_DIFFERENCE_FIELDS
     }
 
 
@@ -517,6 +531,7 @@ def summarize_pairs(
     counts = Counter()
     differences = Counter()
     examples = []
+    first_example_by_field: dict[str, dict[str, Any]] = {}
     for group in groups.values():
         sources = group["source"]
         targets = group["target"]
@@ -537,16 +552,40 @@ def summarize_pairs(
             fields = [
                 name for name, count in pair_differences.items() if count
             ]
-            if fields and len(examples) < top:
-                examples.append(
-                    {
-                        "file": source["file"],
-                        "block": source["block"],
-                        "source_line": source["line"],
-                        "target_line": target["line"],
-                        "fields": fields,
-                    }
-                )
+            if fields:
+                example = {
+                    "file": source["file"],
+                    "block": source["block"],
+                    "source_line": source["line"],
+                    "target_line": target["line"],
+                    "fields": fields,
+                }
+                if len(examples) < top:
+                    examples.append(example)
+                for field in fields:
+                    first_example_by_field.setdefault(field, example)
+
+    representative_examples = []
+    seen_locations = set()
+    candidate_examples = [
+        first_example_by_field[field]
+        for field in PAIR_DIFFERENCE_FIELDS
+        if field in first_example_by_field
+    ]
+    candidate_examples.extend(examples)
+    for example in candidate_examples:
+        location = (
+            example["file"],
+            example["block"],
+            example["source_line"],
+            example["target_line"],
+        )
+        if location in seen_locations:
+            continue
+        seen_locations.add(location)
+        representative_examples.append(example)
+        if len(representative_examples) == top:
+            break
 
     return {
         "blocks": len(groups),
@@ -559,17 +598,9 @@ def summarize_pairs(
         "statement_pairs_compared": counts["statement_pairs_compared"],
         "structural_differences": {
             name: differences[name]
-            for name in (
-                "statement_role",
-                "speaker",
-                "attributes",
-                "tag_tokens",
-                "tag_order",
-                "interpolation_tokens",
-                "interpolation_order",
-            )
+            for name in PAIR_DIFFERENCE_FIELDS
         },
-        "difference_locations": examples,
+        "difference_locations": representative_examples,
     }
 
 

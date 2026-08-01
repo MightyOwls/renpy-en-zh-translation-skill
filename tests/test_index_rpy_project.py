@@ -277,6 +277,41 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertNotIn("Stop", raw)
         self.assertNotIn("停下", raw)
 
+    def test_compares_visible_quote_edges_across_extend_fragments(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "\ntranslate schinese quoted_span_deadbeef:\n\n"
+                '    # duke "\\\"Say this, "\n'
+                '    duke "“先说这句，"\n'
+                '    # extend "then finish it.\\\""\n'
+                '    extend "再把话说完。”"\n'
+                "\ntranslate schinese missing_close_cafefeed:\n\n"
+                '    # duke "\\\"One more, "\n'
+                '    duke "“还有一句，"\n'
+                '    # extend "then stop.\\\""\n'
+                '    extend "然后停下。"\n'
+            )
+
+        result, _ = self.run_cli(
+            "scan",
+            str(self.project),
+            "--index",
+            str(self.index),
+        )
+        paired = result["pairing"]["commented_source_targets"]
+
+        self.assertEqual(
+            paired["structural_differences"]["visible_quote_edges"],
+            1,
+        )
+        mismatch = next(
+            location
+            for location in paired["difference_locations"]
+            if location["block"] == "missing_close_cafefeed"
+        )
+        self.assertEqual(mismatch["fields"], ["visible_quote_edges"])
+
     def test_cli_forces_utf8_output_on_legacy_windows_encoding(self) -> None:
         self.run_cli(
             "scan",

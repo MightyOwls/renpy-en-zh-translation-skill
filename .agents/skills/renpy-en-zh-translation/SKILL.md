@@ -128,6 +128,9 @@ For each batch:
 1. Load only the profiles and glossary entries relevant to the current scene.
 2. Reconstruct complete utterances split by `extend`, `{w}`, `{nw}`, or
    neighboring continuation statements before translating their parts.
+   When visible quotation marks span multiple statements, preserve which
+   source-relative fragment opens and closes the quotation after applying the
+   approved target punctuation.
 3. Classify every string as dialogue, narration, internal monologue, menu, UI,
    or non-translatable code.
 4. Record protected tokens before changing natural-language text.
@@ -149,6 +152,9 @@ For each batch:
 - Preserve the speaker on dialogue and preserve the absence of a speaker on
   narration.
 - Preserve `extend` and custom statement roles.
+- Preserve visible-quotation opening and closing boundaries across dialogue
+  and `extend` fragments; do not force each fragment into a self-contained
+  quote pair.
 - Translate short player-visible strings; do not skip greetings, reactions,
   menu labels, sound expressions, or one-word replies merely because they are
   short.

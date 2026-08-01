@@ -71,6 +71,13 @@ explicitly requests a technical repair.
 Read `extend` and control-tag fragments as one utterance for meaning, then
 write each translated fragment back to its original structural statement.
 
+Visible quotation marks may also span those statements. Preserve the
+source-relative opening and closing roles even when the approved target style
+changes escaped English `\"...\"` to Chinese `“……”` or another approved pair.
+An opening fragment may therefore contain only the opening mark, and an
+`extend` fragment may contain only the closing mark. Do not add a closing mark
+to every fragment or move all quotation marks onto one statement.
+
 ## Never repair silently
 
 If the source contains conflicting tags or an apparent code defect, report it
