@@ -12,6 +12,7 @@
 | Reorder a control tag | Timing or flow changes | Ordered token comparison | Review or block |
 | Pair quotation marks inside every `extend` fragment | A cross-statement speech channel is split or changed | Source-relative visible-quote edge comparison | Restore opening and closing marks to their corresponding fragments |
 | Skip a short string | Visible untranslated text | Residual-English review | Translate or report |
+| Treat an intentional source-identical resource path as leaked English | False review failure in an otherwise complete batch | Exact whole-target comparison | Approve only that full target with `--allowed-unchanged` and report the exemption |
 | Require every target to contain Han characters | False positives on punctuation, symbols, names, or sound-only lines | Compare source/target change plus residual text | Review no-Han targets instead of failing them automatically |
 | Translate a proper name ad hoc | Terminology drift | Glossary/profile review | Revert or approve |
 | Force one phrase to one translation | Character and context flattening | Scene review | Translate by intent |

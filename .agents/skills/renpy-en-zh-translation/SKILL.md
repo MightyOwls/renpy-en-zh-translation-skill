@@ -127,6 +127,10 @@ token-order changes; use `--strict` when those review items must also fail an
 automated gate. Lines without Han characters are informational and require
 contextual review rather than automatic failure. Use repeated `--allowed-latin`
 only for exact project-approved words.
+Use repeated `--allowed-unchanged` only for exact, intentionally
+source-identical whole targets such as resource paths. Matching pairs are
+reported separately and excluded from unchanged-target and Latin-residual
+review. Never use it to hide an unreviewed English sentence.
 
 To validate a complete indexed batch file, build the index before editing and
 run `check` on that same file after translation. The command infers the expected

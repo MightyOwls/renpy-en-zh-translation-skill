@@ -1710,16 +1710,31 @@ def check_translation(args: argparse.Namespace) -> int:
     empty_targets = [
         record for record in targets if not str(record["text"]).strip()
     ]
+    allowed_unchanged = set(args.allowed_unchanged)
+    allowed_unchanged_targets = [
+        target
+        for source, target in pairs
+        if source["text"] == target["text"]
+        and target["text"] in allowed_unchanged
+    ]
+    allowed_unchanged_lines = {
+        record["line"] for record in allowed_unchanged_targets
+    }
     unchanged_targets = [
         target
         for source, target in pairs
         if source["text"] == target["text"]
+        and target["text"] not in allowed_unchanged
     ]
     allowed_latin = {word.casefold() for word in args.allowed_latin}
     latin_residuals = []
     targets_without_han = []
     for record in targets:
         text = str(record["text"])
+        if record["line"] in allowed_unchanged_lines:
+            if not HAN_RE.search(text):
+                targets_without_han.append(record)
+            continue
         searchable = TAG_RE.sub("", text)
         searchable = INTERPOLATION_RE.sub("", searchable)
         searchable = PERCENT_FORMAT_RE.sub("", searchable)
@@ -1816,6 +1831,12 @@ def check_translation(args: argparse.Namespace) -> int:
         "unchanged_targets": {
             "count": len(unchanged_targets),
             "locations": bounded_locations(unchanged_targets, args.top),
+        },
+        "allowed_unchanged_targets": {
+            "count": len(allowed_unchanged_targets),
+            "locations": bounded_locations(
+                allowed_unchanged_targets, args.top
+            ),
         },
         "latin_residual_candidates": {
             "count": len(latin_residuals),
@@ -2062,6 +2083,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="WORD",
         help="Ignore one exact Latin word in residual review; repeat as needed.",
+    )
+    check.add_argument(
+        "--allowed-unchanged",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help=(
+            "Approve one exact source-identical target and exclude it from "
+            "unchanged and Latin-residual review; repeat as needed."
+        ),
     )
     check.add_argument(
         "--top",

@@ -809,6 +809,73 @@ class IndexRpyProjectTests(unittest.TestCase):
         self.assertEqual(missing_expected.returncode, 2)
         self.assertIn("--expected-targets is required", missing_expected.stderr)
 
+    def test_check_allows_only_exact_unchanged_targets(self) -> None:
+        localization = self.project / "game" / "tl" / "schinese" / "story.rpy"
+        with localization.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "\ntranslate schinese resource_path_deadbeef:\n\n"
+                '    # "gui/titleoverlay/start_%s.png"\n'
+                '    "gui/titleoverlay/start_%s.png"\n'
+            )
+        pilot = self.make_fixture_pilot(limit=5)
+        lines = pilot.read_text(encoding="utf-8").splitlines()
+        source_positions = [
+            index for index, line in enumerate(lines) if line.startswith("    # ")
+        ]
+        translated_targets = [
+            '    duke "你迟到了，[player_name]。"',
+            '    drifter "路上太堵了。"',
+            '    "大厅里安静下来。"',
+            '    duke 2 stern "{font=fonts/mask.ttf}遮蔽"',
+            '    "gui/titleoverlay/start_%s.png"',
+        ]
+        for source_position, target in zip(
+            source_positions, translated_targets, strict=True
+        ):
+            lines[source_position + 1] = target
+        pilot.write_text(
+            "\n".join(lines) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        common_args = (
+            "check",
+            str(pilot),
+            "--index",
+            str(self.index),
+            "--source-file",
+            "game/tl/schinese/story.rpy",
+            "--expected-targets",
+            "5",
+        )
+
+        allowed, _ = self.run_cli(
+            *common_args,
+            "--allowed-unchanged",
+            "gui/titleoverlay/start_%s.png",
+            "--strict",
+        )
+        near_match = self.run_cli_failure(
+            *common_args,
+            "--allowed-unchanged",
+            "gui/titleoverlay/start.png",
+            "--strict",
+        )
+        near_match_result = json.loads(near_match.stdout)
+
+        self.assertEqual(allowed["status"], "pass")
+        self.assertEqual(allowed["unchanged_targets"]["count"], 0)
+        self.assertEqual(allowed["allowed_unchanged_targets"]["count"], 1)
+        self.assertEqual(allowed["latin_residual_candidates"]["count"], 0)
+        self.assertEqual(near_match_result["status"], "review")
+        self.assertEqual(
+            near_match_result["allowed_unchanged_targets"]["count"], 0
+        )
+        self.assertEqual(near_match_result["unchanged_targets"]["count"], 1)
+        self.assertEqual(
+            near_match_result["latin_residual_candidates"]["count"], 1
+        )
+
     def test_check_fails_on_source_empty_speaker_and_indentation_changes(self) -> None:
         pilot = self.make_fixture_pilot()
         lines = pilot.read_text(encoding="utf-8").splitlines()
